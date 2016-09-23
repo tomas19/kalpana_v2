@@ -1,7 +1,4 @@
-## Importing all the necessary Python Modules ##
 import matplotlib
-## matplotlib.use('Agg') is used to specify a matplotlib backend ##
-## which if not specified creates an error while running in cluster##
 matplotlib.use('Agg')
 import pylab as pl
 import matplotlib.pyplot as pplot
@@ -14,47 +11,159 @@ import numpy as np
 import collections
 import simplekml
 import math
-
-## time0 : the current time denoting the time when program run starts ##
+import sys
+from optparse import OptionParser
+#---------------------------------------------------------------------
+#---------------------------------------------------------------------
+# Notes:
+# 
+# Extracting data from the input file (ADCIRC output file in .nc format) 
+# as numpy arrays.
+# Longitude (lon) and Latitude (lat) of every vertex in the entire domain.
+# Description of triangular elements (nv) as numpy arrays of 3 vertices 
+# for each triangle.
+# ADCIRC output values (like maximum water elevation, maximum wave 
+# height, maximum wind speed etc.) stored against the corresponding 
+# variable name (var)
+#
+# If the ADCIRC output file contains `_`FILL VALUE (= -99999) var gets 
+# stored as a masked numpy array. The masked or redundant value is 
+# replaced by -100.
+# 
+# For better visualization the extreme values for each variable 
+# are readjusted.
+#
+# Time step information (time`_`var) Used to extract startdate.
+#
+# The time step values are converted into ‘datetime’ objects and then 
+# into a string format to use while writing shapefiles later 
+# (used for time series output data).
+#
+# matplotlib.use('Agg') is used to specify a matplotlib backend 
+# which if not specified creates an error while running in cluster 
+#
+#---------------------------------------------------------------------
+#---------------------------------------------------------------------
+#     P A R S E   C O M M A N D   L I N E   O P T I O N S
+#---------------------------------------------------------------------
+parser = OptionParser()
+parser.add_option("-t", "--units",dest="units", default="si", help="english or si units")
+parser.add_option("-d", "--datumlabel",dest="datumlabel", default="MSL", help="label for units in color scale, e.g., 'NAVD88' or 'local ground level'")
+parser.add_option("-n", "--storm", dest="storm", default="null",help="name of storm for labelling plot")
+parser.add_option("-m", "--filename", dest="filename", default="null", help="name of file to read")
+parser.add_option("-f", "--filetype", dest="filetype", default="maxele.63.nc", help="type of file to read")
+parser.add_option("-s", "--polytype", dest="polytype", default="polygon", help="polyline or polygon")
+parser.add_option("-v", "--viztype",dest="viztype", default="kmz", help="kmz or shapefile")
+parser.add_option("-p", "--palettename", dest="palettename", default="water-level.pal", help="palette file name for the contour color scale")
+parser.add_option("-o", "--outputfile", dest="outputfile", default='null', help="name of output file")
+parser.add_option("-g", "--logofile", dest="logofile", default='logo.png', help="name of logo image file")
+parser.add_option("-i", "--logodims", dest="logodims", default='null', help="dimensions of logo image file")
+parser.add_option("-q", "--logounits", dest="logounits", default='fraction', help="units of logo image file")
+parser.add_option("-b", "--subplots", dest="subplots", default="no", help="whether to make subplots first (yes or no)")
+parser.add_option("-e", "--contourlevels", dest="contourlevels", default="null", help="contour levels")
+parser.add_option("-r", "--contourrange", dest="contourrange", default="null", help="contour range min max increment, e.g., '-10 10 1 for contours every 1 unit from -10 to +10")
+parser.add_option("-k", "--ticks", dest="specifiedticks", default="null", help="colorbar tick labels")
+parser.add_option("-l", "--lonlatbox", dest="l", default="36 33.5 -60 -100",help="local box : NorthLat SouthLat EastLong WestLong")
+parser.add_option("-u", "--lonlatbuffer", dest="lonlatbuffer", default="0",help="longitude latitude buffer")
+(options, args) = parser.parse_args()
+#nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/maxele.63.nc').variables
+#'http://opendap.renci.org:1935/thredds/dodsC/tc/arthur/12/nc6b/hatteras.renci.org/nclo/nhcConsensus/maxele.63.nc'
+#
+# time0 : the current time denoting the time when program run starts 
 time0=time.time()
-
-## Menu ##
-print (30 * '-')
-print ("   M A I N - M E N U")
-print (30 * '-')
-print ("1. BATHYMETRY")
-print ("2. MAXIMUM WATER ELEVATION")
-print ("3. MAXIMUM WIND VELOCITY")
-print ("4. MAXIMUM WAVE HEIGHT")
-print ("5. NODAL ELEVATION")
-print ("6. NODAL WIND VELOCITY")
-print ("7. NODAL WAVE HEIGHT")
-print ("8. PEAK WAVE PERIOD")
-print ("9. NODAL PEAK WAVE PERIOD")
-print ("10. NODAL AVERAGE WAVE PERIOD")
-print ("A. POLYLINE")
-print ("B. POLYGON")
-print ("X. GIS SHAPEFILE")
-print ("Y. GOOGLE EARTH") 
-print (30 * '-')
-
-     
-## ACCEPTING USER INPUT ##
-storm = raw_input('Enter name of storm :')
-choice = raw_input('Enter your choice of ADCIRC output to be visualized [1-8] : ')
-filechoice = int(choice)
-choice = raw_input('Enter your choice of vector shape (Polyline or Polygon) (A/B): ')
-if choice == 'A':
-    shape = 'polyline'
-elif choice == 'B':
-    shape = 'polygon'
-vchoice = raw_input('Enter your choice of visualization (GIS Shape File or Google Earth (KMZ)) (X/Y): ')
-domain = raw_input('Do you want to make subplots first (with longlat boxes) and then plot full domain(Y/N)')
-
-## DEFINING BINS FOR KML CREATION ##
-if vchoice == 'Y':
+#
+# jgf: If there are no command line arguments, trigger the menu to 
+# collect input parameters interactively. Otherwise, use the command 
+# line arguments.
+if options.storm == "null" : 
+    print (30 * '-')
+    print ("   M A I N - M E N U")
+    print (30 * '-')
+    print ("bathytopo (reads maxele.63.nc)")
+    print ("maxele.63.nc")
+    print ("maxwvel.63.nc")
+    print ("swan_maxHS.63.nc")
+    print ("fort.63.nc")
+    print ("fort.74.nc")
+    print ("swan_HS.63.nc")
+    print ("swan_TPS_max.63.nc")
+    print ("swan_TPS.63.nc")
+    print ("swan_TMM10.63.nc")
+    print (30 * '-')
+    #
+    # ACCEPTING USER INPUT
+    storm = raw_input('Enter name of storm :')
+    filetype = raw_input('Enter your choice of ADCIRC output to be visualized : ')
+    polytype = raw_input('Enter your choice of vector shape (polyline or polygon) : ')
+    viztype = raw_input('Enter your choice of visualization (GIS Shape File or Google Earth (KMZ))  (shapefile or kmz): ')
+    subplots = raw_input('Do you want to make subplots first (with longlat boxes) and then plot full domain (yes or no)')
+    if viztype == 'kmz' or viztype == 'Y':
+        l= raw_input('Enter local box : NorthLat SouthLat EastLong WestLong :')
+        if filetype == '1' or filetype == '2' or filetype == '3' or filetype == '4' or filetype == '8':
+            lonlatbuffer = float(raw_input('enter long/lat buffer: '))
+        elif filetype == '5' or filetype == '6' or filetype == '7':
+            print 'KMZ files cannot be created for this file type'
+    filename = 'null'
+    logofile = 'logo.png'
+    logodims = 'null'
+    logounits = 'fraction'
+    palettename = 'null'
+    units = 'si'
+    contourlevels = 'null'
+    contourrange = 'null'
+    datumlabel = 'msl'
+    specifiedticks = 'null'
+else:
+    filetype=options.filetype
+    filename=options.filename
+    polytype=options.polytype 
+    viztype=options.viztype
+    l=options.l
+    subplots=options.subplots
+    lonlatbuffer=float(options.lonlatbuffer)
+    storm=options.storm      
+    palettename=options.palettename
+    outputfile=options.outputfile
+    logodims = options.logodims
+    logounits = options.logounits
+    logofile=options.logofile    
+    contourlevels=options.contourlevels
+    contourrange=options.contourrange
+    specifiedticks=options.specifiedticks
+    units=options.units
+    datumlabel=options.datumlabel
+# 
+# jgf: Change the input values to something more intuitive if necessary
+#print 'INFO: storm is ' + storm
+legacyPolyTypeMapping = { 'A' : 'polyline', 'B' : 'polygon' }
+if polytype in legacyPolyTypeMapping.keys():
+    polytype = legacyPolyTypeMapping[polytype]
+#print 'INFO: polytype is ' + polytype
+legacyVizTypeMapping = { 'X' : 'shapefile', 'Y' : 'kmz' }
+if viztype in legacyVizTypeMapping.keys():
+    viztype = legacyVizTypeMapping[viztype]
+#print 'INFO: viztype is ' + viztype    
+legacySubplotsMapping = { 'Y' : 'yes', 'N' : 'no' }
+if subplots in legacySubplotsMapping.keys():
+    subplots = legacySubplotsMapping[subplots]
+#print 'INFO: subplots is ' + subplots
+legacyFileTypeMapping = { '1' : 'bathytopo', '2' : 'maxele.63.nc', '3' : 'maxwvel.63.nc', '4' : 'swan_HS_max.63.nc', '5' : 'fort.63.nc', '6' : 'fort.74.nc', '7' : 'swan_HS.63.nc', '8' : 'swan_TPS_max.63.nc', '9' : 'swan_TPS.63.nc', '10' : 'swan_TMM10.63.nc' }
+if filetype in legacyFileTypeMapping.keys():
+    filetype = legacyFileTypeMapping[filetype]
+#print 'INFO: filetype is ' + filetype
+#
+# jgf: designate certain files as time varying 
+timeVaryingFiles = ['fort.63.nc', 'fort.74.nc', 'swan_HS.63.nc', 'swan_TPS_63.nc', 'swan_TMM10.63.nc']
+if filetype in timeVaryingFiles: print "INFO: This file is time varying."
+#
+# jgf: Check for conflicts between input parameters. 
+if viztype == 'kmz' and filetype in timeVaryingFiles: 
+    print "ERROR: Cannot produce Google Earth (kmz) output for time varying files."
+    exit
+#
+# DEFINING BINS FOR KML CREATION 
+if viztype ==  'kmz':
     gdomain = [50,5,-60,-100]
-    l= raw_input('Enter local box : NorthLat SouthLat EastLong WestLong :')
     local = map(float,l.split())
     bins = []
     bins.append([local[1],gdomain[1],gdomain[2],gdomain[3]])
@@ -65,180 +174,123 @@ if vchoice == 'Y':
         south = north
         north = north +0.5             
     bins.append([gdomain[0],local[0],gdomain[2],gdomain[3]])
-    print bins
-
-## ROUTINE TO CALCULATE CONTOUR LEVELS ##
-def contlevels(min,max,n):
-    x = (max-min)/n
-    return range(min,int(max+x),int(x))
-
-## INPUT INFORMATION - assigning appropriate .nc files ,variable name, number of contour levels, file name, color palette for visualization ##
-
-## 1 - BATHYMETRY ##
-if filechoice == 1:
-    nc=netCDF4.Dataset('maxele.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/maxele.63.nc').variables
-    vname='depth'
-    var = nc[vname][:]
-    #np.place(var,var > 500,[499.99])
-    #num = int(raw_input('Enter number of levels : (multiple of 4 for kml)'))
-    palettename = 'mesh-bathy.pal'
-    levels = range(0,8500,500)
-    #levels = range(0,550,25)
-    #var = np.multiply(-1,var)
-    print min(var)
-    #var = np.multiply(-1,var)
-    #levels = [-40,-30,-20,-10,-5,0,2,4,6,8,10,15,20,30,40,50,100,200,300,400,500,550]
-    #levels = [-600, -400, -200, -100, -50,-30,-10,-6,-4,-2,-1,-0.8, -0.4, 0, 0.4, 0.8, 1, 2, 4, 8, 10,30,40]
-    if vchoice == 'X':
-        outputname = 'mesh-bathy'
-    else:    
-        foldname = 'Bathymetry'
-        lonlatbuffer = float(raw_input('enter long/lat buffer: '))
-## 2 - MAXIMUM WATER LEVELS ##
-elif filechoice == 2:
-    nc=netCDF4.Dataset('maxele.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/maxele.63.nc').variables
-    vname='zeta_max'
-    palettename = 'water-level.pal'
-    var = nc[vname][:]
-    print type(var)
-    if vchoice == 'Y':
-        var = var.filled(-100)
-        var = np.multiply(3.28084,var)
-        np.place(var,var > 8,[7.99])
-        np.place(var, (-100 < var) & (var < 0),[0])    
-    levels = [0,1,2,3,4,5,6,7,8]
-    #levels = [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2.0,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.25]  
-    print levels
-    if vchoice == 'X':
-        outputname = 'water-level'
-    else:
-        foldname = 'Maximum-Water-Levels'
-        lonlatbuffer = float(raw_input('enter long/lat buffer: '))
-## 3 - MAXIMUM WIND VELOCITY ##        
-elif filechoice == 3:
-    nc=netCDF4.Dataset('maxwvel.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/maxwvel.63.nc').variables
-    vname='wind_max'
-    var = nc[vname][:]
-    print type(var)
-    palettename = 'wavht.pal' 
-    #levels = range(0,int(max(nc[vname][:])+ 1),1)
-    levels = [0,5,10,15,20,25,30,35,40,45]
-    print levels
-    if vchoice == 'X':
-        outputname = 'wind-speed'
-    else:
-       foldname = 'Maximum Wind Velocity'         
-       lonlatbuffer = float(raw_input('enter long/lat buffer: '))
-## 4 - MAXIMUM WAVE HEIGHT ##
-elif filechoice == 4:
-    nc=netCDF4.Dataset('swan_HS_max.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/swan_HS_max.63.nc').variables
-    vname='swan_HS_max'
-    #palettename = 'wavht.pal'
-    palettename = 'water-level.pal'
-    var = nc[vname][:]
-    if vchoice == 'Y':
-        var = var.filled(-100)
-        var = np.multiply(3.28084,var)
-        np.place(var,var > 32,[31.99])
-        np.place(var, (-100 < var) & (var < 0),[0])
-    levels = [0,4,8,12,16,20,24,28,32]
-##    levels = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14]
-    print levels
-    if vchoice == 'X':
-        outputname = 'wave-height'
-    else:
-       foldname = 'Maximum-Wave-Heights'
-       lonlatbuffer = float(raw_input('enter long/lat buffer: '))
-## 5 - NODAL WATER LEVEL ##
-elif filechoice == 5:
-    nc=netCDF4.Dataset('fort.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/fort.63.nc').variables
-    vname='zeta'
-    outputname = 'nodalelev'+'_'+ shape + '_'+ str(storm)   
-    if vchoice == 'Y':
-        print 'KMZ files cannot be created for fort.63.nc'
-## 6 - NODAL WIND VELOCITY ##
-elif filechoice == 6:
-    nc=netCDF4.Dataset('fort.74.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/fort.74.nc').variables   
-    # Trying to read in data using the opendap url created an unresolved runtime error
-    windx = nc['windx'][:]
-    windy = nc['windy'][:]
-    wind = [[None for i in range(len(windx[j]))]for j in range(len(windx))]
-    outputname = 'nodalwvel'+'_'+ shape + '_'+ str(storm)
-    if vchoice == 'Y':
-        print 'KMZ files cannot be created for fort.74.nc'
-## 7 - NODAL WAVE HEIGHT ##
-elif filechoice == 7:
-    nc=netCDF4.Dataset('swan_HS.63.nc').variables
-    #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/12/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/swan_HS.63.nc').variables
-    vname = 'swan_HS'
-    outputname = 'nodalwavht'+'_'+ shape + '_'+ str(storm)
-    if vchoice == 'Y':
-        print 'KMZ files cannot be created for swan_HS.63.nc'
-## 8 - PEAK WAVE PERIOD ##    
-elif filechoice == 8:
-    nc = netCDF4.Dataset('swan_TPS_max.63.nc').variables
-    #nc = netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/12/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/swan_TPS_max.63.nc').variables
-    vname = 'swan_TPS_max'
-    palettename = 'wavht.pal'
-    var = nc[vname][:]
-    if vchoice == 'Y':
-        var = var.filled(-100)
-    levels = [0,5,10,15,20,25]
-    if vchoice == 'X':
-        outputname = 'wave-period'
-    else:
-       foldname = 'Maximum-Wave-Period'
-       lonlatbuffer = float(raw_input('enter long/lat buffer: '))
-elif filechoice == 9:
-    nc = netCDF4.Dataset('swan_TPS.63.nc').variables
-    vname = 'swan_TPS'
-    outputname = 'nodalpeakpd'+'_'+shape+'_'+str(storm)
-elif filechoice == 10:
-    nc = netCDF4.Dataset('swan_TMM10.63.nc').variables
-    vname = 'swan_TMM10'
-    outputname = 'avgpd'+'_'+shape+'_'+str(storm)
-    
+    #print bins
+#
+fileTypesColorBarNames = { 'maxele.63.nc' : 'Colorbar-water-levels.png', 'swan_HS_max.63.nc' : 'Colorbar-wave-heights.png', 'maxwvel.63.nc' : 'Colorbar-wind-speeds.png', 'swan_TPS_max.63.nc' : 'Colorbar-wave-periods.png', 'bathytopo' : 'Colorbar-bathymetry.png' }
+fileTypesNetCDFVarNames = { 'bathytopo' : 'depth', 'maxele.63.nc' : 'zeta_max', 'maxwvel.63.nc' : 'wind_max', 'swan_HS_max.63.nc' : 'swan_HS_max', 'fort.63.nc' : 'zeta', 'fort.74.nc' : [ 'windx', 'windy' ], 'swan_HS.63.nc' : 'swan_HS', 'swan_TPS_max.63.nc' : 'swan_TPS_max', 'swan_TPS.63.nc' : 'swan_TPS', 'swan_TMM10.63.nc' : 'swan_TMM10' }
+fileTypesDefaultPaletteFileNames = { 'bathytopo' : 'mesh-bathy.pal', 'maxele.63.nc' : 'water-level.pal', 'maxwvel.63.nc' : 'wind-speed.pal', 'swan_HS_max.63.nc' : 'wavht.pal', 'swan_TPS_max.63.nc' : 'wavht.pal' }       
+fileTypesKMLFolderNames = { 'bathytopo' : 'Bathymetry', 'maxele.63.nc' : 'Maximum-Water-Levels', 'maxwvel.63.nc' : 'Maximum Wind Velocity', 'swan_HS_max.63.nc' : 'Maximum-Wave-Heights', 'swan_TPS_max.63.nc' : 'Maximum-Wave-Period' }
+fileTypesDefaultOutputShapeFileNames = { 'bathytopo' : 'mesh-bathy', 'maxele.63.nc' : 'water-level', 'maxwvel.63.nc' : 'wind-speed','swan_HS_max.63.nc' : 'wave-height', 'fort.63.nc' : 'nodalelev'+'_'+ polytype + '_'+ str(storm), 'fort.74.nc' : 'nodalwvel'+'_'+ polytype + '_'+ str(storm), 'swan_HS.63.nc' : 'nodalwavht'+'_'+ polytype + '_'+ str(storm), 'swan_TPS_max.63.nc' : 'wave-period', 'swan_TPS.63.nc' :  'nodalpeakpd'+'_'+polytype+'_'+str(storm), 'swan_TMM10.63.nc' : 'avgpd'+'_'+polytype+'_'+str(storm) }    
+#
+# use the default file name if the file name was not provided
+if filename == 'null': 
+   filename = filetype
+#
+# use the default palette file unless a different palette file was requested
+if palettename == 'null':
+   palettename = fileTypesDefaultPaletteFileNames[filetype]
+#
+if units == 'english':
+    fileTypesDefaultContourLevels = { 'bathytopo' : [-40,-30,-20,-10,-5,0,2,4,6,8,10,15,20,30,40,50,100,200,300,400,500,550], 'maxele.63.nc' : [0,1,2,3,4,5,6,7,8], 'maxwvel.63.nc' : [0,10,20,30,40,50,60,70,80,90], 'swan_HS_max.63.nc' : [0,4,8,12,16,20,24,28,32], 'fort.63.nc' : [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5], 'fort.74.nc' : [0,10,20,30,40,50,60,70,80,90], 'swan_HS.63.nc' : [0,4,8,12,16,20,24,28,32], 'swan_TPS_max.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ], 'swan_TPS.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ], 'swan_TMM10.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ] }
 else:
-    print "Error in input"
-## Timestep variable ##
+    # default contour range for si units
+    fileTypesDefaultContourLevels = { 'bathytopo' : [-40,-30,-20,-10,-5,0,2,4,6,8,10,15,20,30,40,50,100,200,300,400,500,550], 'maxele.63.nc' : [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2.0,2.25,2.5,2.75,3,3.25,3.5,3.75,4,4.25], 'maxwvel.63.nc' : [0,5,10,15,20,25,30,35,40,45], 'swan_HS_max.63.nc' : [0,1,2,3,4,5,6,7,8], 'fort.63.nc' : [-3, -2.5, -2.0, -1.5, -1.0, -0.5, 0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], 'fort.74.nc' : [0,5,10,15,20,25,30,35,40,45], 'swan_HS.63.nc' : [0,1, 2, 3, 4, 5, 6, 7, 8], 'swan_TPS_max.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ], 'swan_TPS.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ], 'swan_TMM10.63.nc' : [ 1, 2, 3, 4, 5, 6, 8, 10 ] }
+#
+# ROUTINE TO CALCULATE CONTOUR LEVELS 
+def generateContourLevelsFromMinMaxAndIncrement(minl,maxl,inc):
+    contourLevels = []
+    clevel = minl
+    while clevel <= maxl:
+        contourLevels.append(clevel)
+        clevel = clevel + inc
+    return contourLevels
+#
+# jgf: Use the default contour levels unless a different set of contour levels
+# was requested, or a contour range was specified. If both a range
+# and specific levels were specified, the levels take precedence.
+levels = []
+if contourlevels == 'null':
+    if contourrange == 'null':
+        levels = fileTypesDefaultContourLevels[filetype]
+    else:
+        # use the specified range and increment
+        rangelimits = contourrange.split()
+        levels = generateContourLevelsFromMinMaxAndIncrement(float(rangelimits[0]),float(rangelimits[1]),float(rangelimits[2]))
+else:
+    # use the specified contour levels from the command line
+    for clevel in contourlevels.split():
+        levels.append(float(clevel))
+#
+# jgf: Use the tick values specified by the analyst, if any; otherwise
+# just use the contour levels
+ticks = []
+if specifiedticks == 'null':
+    ticks = levels
+else:
+    for ctick in specifiedticks.split():
+        ticks.append(float(ctick))
+#
+# Read the data
+nc = netCDF4.Dataset(filename).variables
+if filetype not in timeVaryingFiles: 
+    var = nc[fileTypesNetCDFVarNames[filetype]][:]
+#
+# jgf: designate certain files as needing to have -99999 values filled in
+requireFill = ['maxele.63.nc', 'swan_HS_max.63.nc', 'fort.63.nc', 'swan_HS.63.nc', 'swan_TPS_max.63.nc', 'swan_TPS.63.nc', 'swan_TMM10.63.nc']
+#
+# jgf: fill -99999 values with -100 values to avoid using a masked array
+# because kmz generator cannot handle masked arrays
+if viztype == 'kmz' and filetype in requireFill and filetype not in timeVaryingFiles:
+    var = var.filled(-100)
+#
+# jgf: specify conversion factors for conversion to english units
+# (m to ft), (m/s to mph)
+fileTypesEnglishUnitsConversions = { 'bathytopo' : 3.2808399, 'maxele.63.nc' : 3.2808399, 'maxwvel.63.nc' : 2.2369363, 'swan_HS_max.63.nc' : 3.2808399, 'fort.63.nc' : 3.2808399, 'fort.74.nc' : 2.2369363, 'swan_HS.63.nc' : 3.2808399, 'swan_TPS_max.63.nc' : 1.0, 'swan_TPS.63.nc' : 1.0, 'swan_TMM10.63.nc' : 1.0 }
+#
+# jgf: Convert units if english units were specified
+if units == 'english':
+    if filetype not in timeVaryingFiles : 
+        var = np.multiply(float(fileTypesEnglishUnitsConversions[filetype]),var)
+    fileTypesUnitLabels = { 'maxele.63.nc' : 'Water Level (feet above ' + datumlabel + ')', 'fort.63.nc' : 'Water Level (feet above ' + datumlabel + ')', 'swan_HS_max.63.nc' : 'Wave Height (feet)', 'maxwvel.63.nc' : 'Wind Speed at Ground Level (mph)', 'swan_TPS_max.63.nc' : 'Peak Wave Period (s)', 'bathytopo' : 'Bathymetry (ft below ' + datumlabel + ')'}
+else:
+    fileTypesUnitLabels = { 'maxele.63.nc' : 'Water Level (m above ' + datumlabel + ')', 'fort.63.nc' : 'Water Level (m above ' + datumlabel + ')', 'swan_HS_max.63.nc' : 'Wave Height (m)', 'maxwvel.63.nc' : 'Wind Speed at Ground Level (m/s)', 'swan_TPS_max.63.nc' : 'Peak Wave Period (s)', 'bathytopo' : 'Bathymetry (m below ' + datumlabel +')'}
+#
+# jgf: limit data values based on the contouring range for kmz
+if filetype not in timeVaryingFiles:
+    np.place(var,var > max(levels),max(levels)-0.01)   
+    np.place(var,(-100 < var) & (var < min(levels)),min(levels)) 
+#
 timestep = 'time'
-    
-## Extracting longitude and latitude of all mesh nodes ##
+#
+# Extracting longitude and latitude of all mesh nodes 
 lon = nc['x'][:]
 lat = nc['y'][:]
-
-## Extracting element description details (list of 3 vertices specified for each triangle denoted by index number)from the output file ##
+#
+# Extracting element description details (list of 3 vertices specified 
+# for each triangle denoted by index number) from the output file 
 nv = nc['element'][:,:] -1
-    
-## Extracting time step information from the output file ##
+#
+# Extracting time step information from the output file 
 time_var= nc['time']
-## startdate specifies start time of ADCIRC computations ##
+#
+# startdate specifies start time of ADCIRC computations 
 startdate = time_var.units
-
-## Converting the time step information into datetime objects ##
+#
+# Converting the time step information into datetime objects 
 dtime = netCDF4.num2date(time_var[:],startdate)
-
-## Converting datetime objects to string format - YYMMDDHHMMSS ##
+#
+# Converting datetime objects to string format - YYMMDDHHMMSS 
 a = []
 for j in dtime:
     a.append(j.strftime("%Y%m%d%H%M%S"))
-
-## RUNNING TIME ##
-print 'Finished organizing input information after %d seconds' % (time.time()-time0)
-
-## FUNCTION TO CHECK IF VERTEX FALLS WITHIN A SPECIFIED LONG/LAT BOX##
+#
+# FUNCTION TO CHECK IF VERTEX FALLS WITHIN A SPECIFIED LONG/LAT BOX##
 def vertexcheck(LatN,LatS,LongE,LongW,vertex):
     if lon[vertex]<LongE and lon[vertex]>LongW and lat[vertex]>LatS and lat[vertex]<LatN:
         return True
 
 ## FUNCTION TO CREATE LOCAL MESH WITHIN SPECIFIED LONG/LAT BOX ##
-def latlonbox(LatN,LatS,LongE,LongW,lonlatbuffer):
+def createSubmeshWithinSpecifiedLatLonBox(LatN,LatS,LongE,LongW,lonlatbuffer):
     nvertex= len(lon)
     nele = len(nv)
     locallat = []
@@ -287,16 +339,15 @@ def latlonbox(LatN,LatS,LongE,LongW,lonlatbuffer):
         if includeele2[i] == 1:
             localelem.append((global2local[nv[i][0]],global2local[nv[i][1]],global2local[nv[i][2]]))                   
     return locallat,locallon,localelem,varlocal
-
-## READING IN A COLOR PALETTE FILE (.PAL) ##
-
+#
+# READING IN A COLOR PALETTE FILE (.PAL) 
 linenum = 0
 palette = dict()
 palette['value'] = []
 palette['r'] = []
 palette['g'] = []
 palette['b'] = []
-if vchoice == 'Y':
+if viztype ==  'kmz':
     with open(palettename,'r') as file:      
         for line in file:
             linenum = linenum + 1
@@ -306,227 +357,204 @@ if vchoice == 'Y':
                 palette['r'].append(float(a[1]))
                 palette['g'].append(float(a[2]))
                 palette['b'].append(float(a[3]))
-
-## INTERPOLATING FROM COLOR PALETTE BASED ON NUMBER OF LEVELS ##
-
-def interpolate(num,palette):
-    newpalette = dict()
-    newpalette['value'] = []
-    newpalette['r'] = []
-    newpalette['g'] = []
-    newpalette['b'] = []
-    scale =  np.arange(0,1,1/num)
-    for i in range(len(scale)):
+#
+# Interpolating the color at each contour level from the palette 
+def interpolateContourLevels(contourLevels,palette):
+    contourPalette = dict()
+    contourPalette['value'] = []
+    contourPalette['r'] = []
+    contourPalette['g'] = []
+    contourPalette['b'] = []
+    scale = []
+    for i in range(len(contourLevels)):
+        scale.append((contourLevels[i]-contourLevels[0])/(contourLevels[-1]-contourLevels[0]))
+    for i in range(len(contourLevels)):
         #print scale[i]
-        newpalette['value'].append(scale[i])
+        contourPalette['value'].append(scale[i])
         for j in range(len(palette['value'])):
             if scale[i] == palette['value'][j]:
-                newpalette['r'].append(palette['r'][j])
-                newpalette['g'].append(palette['g'][j])
-                newpalette['b'].append(palette['b'][j])
+                contourPalette['r'].append(palette['r'][j])
+                contourPalette['g'].append(palette['g'][j])
+                contourPalette['b'].append(palette['b'][j])
                 break
             elif scale[i] > palette['value'][j] and scale[i] < palette['value'][j+1]:
-                newpalette['r'].append(int(palette['r'][j] + ((palette['r'][j+1]-palette['r'][j])/(palette['value'][j+1]
+                contourPalette['r'].append(np.around(palette['r'][j] + ((palette['r'][j+1]-palette['r'][j])/(palette['value'][j+1]-palette['value'][j]))*(scale[i]-palette['value'][j])))
+                contourPalette['g'].append(np.around(palette['g'][j] + ((palette['g'][j+1]-palette['g'][j])/(palette['value'][j+1]
                                             -palette['value'][j]))*(scale[i]-palette['value'][j])))
-                newpalette['g'].append(int(palette['g'][j] + ((palette['g'][j+1]-palette['g'][j])/(palette['value'][j+1]
-                                            -palette['value'][j]))*(scale[i]-palette['value'][j])))
-                newpalette['b'].append(int(palette['b'][j] + ((palette['b'][j+1]-palette['b'][j])/(palette['value'][j+1]
+                contourPalette['b'].append(np.around(palette['b'][j] + ((palette['b'][j+1]-palette['b'][j])/(palette['value'][j+1]
                                             -palette['value'][j]))*(scale[i]-palette['value'][j])))
                 break
     RGB = list()
-    for i in range(len(newpalette['r'])):
-        RGB.append((newpalette['r'][i],newpalette['g'][i],newpalette['b'][i]))
+    for i in range(len(contourPalette['r'])):
+        RGB.append((contourPalette['r'][i],contourPalette['g'][i],contourPalette['b'][i]))
     return RGB
-
-## TO CONVERT FROM RGB COLOR CODE TO HEX COLOR CODE ##
+#
+# TO CONVERT FROM RGB COLOR CODE TO HEX COLOR CODE 
 def rgb_to_hex(rgb):
     return '#%02x%02x%02x' % rgb
-
-## CREATE COLOR BAR FOR THE CONTOUR PLOT ##
-def createcolorbar(hexlist,levels):
+#
+# CREATE COLOR BAR FOR THE CONTOUR PLOT 
+def createColorBar(hexlist,levels,ticks):
     fig = pplot.figure(figsize = (1.5,8))
     ax = fig.add_axes([0.3,0.05,0.3,0.9])
     cmap = matplotlib.colors.ListedColormap(hexlist[:(len(hexlist)-1)],'contour')
     norm = matplotlib.colors.BoundaryNorm(levels, cmap.N)
-    cb = matplotlib.colorbar.ColorbarBase(ax, cmap = cmap,norm=norm,boundaries=levels,extend='neither',ticks=levels,spacing='proportional',orientation='vertical')
-    if filechoice== 2:
-        cb.set_label('Water Level (feet)')
-        pl.savefig('Colorbar-water-levels.png')
-    elif filechoice == 4:
-        cb.set_label('Wave Height (feet)')
-        pl.savefig('Colorbar-wave-heights.png')
-    elif filechoice == 3:
-        cb.set_label('Wind Speed (m/s)')
-        pl.savefig('Colorbar-wind-speeds.png')       
-    elif filechoice == 8:
-        cb.set_label('Peak Wave Period (s)')
-        pl.savefig('Colorbar-wave-periods.png')
-    elif filechoice == 1:
-        cb.set_label('Bathymetry (m)')
-        pl.savefig('Colorbar-bathymetry.png')       
+    cb = matplotlib.colorbar.ColorbarBase(ax, cmap = cmap,norm=norm,boundaries=levels,extend='neither',ticks=ticks,spacing='proportional',orientation='vertical')
+    cb.set_label(fileTypesUnitLabels[filetype])
+    matplotlib.pyplot.savefig(fileTypesColorBarNames[filetype])
 
-## CREATING SCREEN OVERLAYS (COLOR BAR AND LOGO) FOR THE KML FILE ##
-def screen(kml):
+#
+# CREATING SCREEN OVERLAYS (COLOR BAR AND LOGO) FOR THE KML FILE 
+def createScreenOverlaysForKML(kml,logofile,logodims,logounits):
     screen1 = kml.newscreenoverlay(name='Colorbar')
-    if filechoice == 2:
-        screen1.icon.href = 'Colorbar-water-levels.png'
-    elif filechoice == 4:
-        screen1.icon.href = 'Colorbar-wave-heights.png'
-    elif filechoice == 8:
-        screen1.icon.href = 'Colorbar-wave-periods.png'
-    elif filechoice == 3:
-        screen1.icon.href = 'CColorbar-wave-periods.png'
-    elif filechoice == 1:
-        screen1.icon.href = 'Colorbar-bathymetry.png'
+    screen1.icon.href = fileTypesColorBarNames[filetype]
     screen1.overlayxy = simplekml.OverlayXY(x=0,y=0,xunits=simplekml.Units.fraction,
-                                       yunits=simplekml.Units.fraction)
+                                     yunits=simplekml.Units.fraction)
     screen1.screenxy = simplekml.ScreenXY(x=0,y=0.1,xunits=simplekml.Units.fraction,
                                      yunits=simplekml.Units.fraction)
     screen1.size.x = 0.1
     screen1.size.y = 0.72
     screen1.size.xunits = simplekml.Units.fraction
     screen1.size.yunits = simplekml.Units.fraction
-    screen2 = kml.newscreenoverlay(name='logo')
-    screen2.icon.href = 'logo.png'
-    screen2.overlayxy = simplekml.OverlayXY(x=0,y=1,xunits=simplekml.Units.fraction,
+
+    if logofile != 'null' and logofile != 'none': 
+        screen2 = kml.newscreenoverlay(name='logo')
+        screen2.icon.href = logofile
+        screen2.overlayxy = simplekml.OverlayXY(x=0,y=1,xunits=simplekml.Units.fraction,
                                        yunits=simplekml.Units.fraction)
-    screen2.screenxy = simplekml.ScreenXY(x=0,y=1,xunits=simplekml.Units.fraction,
-                                     yunits=simplekml.Units.fraction)
-    screen2.size.x = 0.85
-    screen2.size.y = 0.08
-    screen2.size.xunits = simplekml.Units.fraction
-    screen2.size.yunits = simplekml.Units.fraction
-    print 'Screen Overlay completed'
-    
-## GENERAL REQUIREMENTS FOR SHAPE FILES AND KML FILES ##
-if vchoice == 'Y':
+        screen2.screenxy = simplekml.ScreenXY(x=0,y=1,xunits=simplekml.Units.fraction,
+                                        yunits=simplekml.Units.fraction)
+        if logounits == 'fraction':     
+            screen2.size.xunits = simplekml.Units.fraction
+            screen2.size.yunits = simplekml.Units.fraction
+        if logounits == 'pixel':
+            screen2.size.xunits = simplekml.Units.pixel
+            screen2.size.yunits = simplekml.Units.pixel
+        if logodims == 'null':
+            screen2.size.x = 0.85
+            screen2.size.y = 0.08
+        else:
+            a = logodims.split(" ")
+            screen2.size.x = float(a[0])
+            screen2.size.y = float(a[1])
+#
+# GENERAL REQUIREMENTS FOR SHAPE FILES AND KML FILES 
+if viztype ==  'kmz':
     ## CREATING A SIMPLEKML OBJECT ##
     kml = simplekml.Kml()
     box = simplekml.Box(north = 46.86, south = 4.32, east = -57.523, west = -90)
     lod = simplekml.Lod(minlodpixels=128, maxlodpixels=-1, minfadeextent=0, maxfadeextent=0)
     reg = simplekml.Region(box,lod)
-    c = interpolate(float(len(levels)),palette)
-    hex = []
+    c = interpolateContourLevels(levels,palette)
+    hexColorsList = []
     for i in c:
-        hex.append(rgb_to_hex(i))
-    createcolorbar(hex,levels)
-    screen(kml)
+        hexColorsList.append(rgb_to_hex(i))
+    createColorBar(hexColorsList,levels,ticks)
+    createScreenOverlaysForKML(kml,logofile,logodims,logounits)
 else:
     ## DEFINING SPATIAL REFERENCE ##
     crs = {'no_defs': True, 'ellps': 'WGS84', 'datum': 'WGS84', 'proj': 'longlat'}
     ## DEFINING OGR DRIVER ##
     driver = 'ESRI Shapefile'
-
-
-## Triangulating the entire domain ##
+#
+# Triangulating the entire domain ##
 tri = matplotlib.tri.Triangulation(lon,lat,triangles=nv)
-## geoms is an ordered dictionary which stores the details of geometry of the polygons which describe the individual contour levels ##
+#
+# geoms is an ordered dictionary which stores the details of geometry 
+#of the polygons which describe the individual contour levels #
 geoms = collections.OrderedDict()
 
-def classify_polygons(polys):
+def classifyPolygons(polys):
     outer = []
     inner = []
     for p in polys:
-        if signed_area(p) >= 0:
+        if signedArea(p) >= 0:
             outer.append(p)
         else:
             inner.append(p)
     return outer,inner
 
-def points_inside_poly(points, polygon):
+def pointsInsidePoly(points, polygon):
     p = matplotlib.path.Path(polygon)
     return p.contains_points(points)
 
-def reverse_geometry(p):
+def reverseGeometry(p):
   return np.flipud(p)
 
 ## To calculate the signed area of an irregular polyon ##
-def signed_area(ring):
+def signedArea(ring):
     """Return the signed area enclosed by a ring in linear time using the 
     algorithm at: http://www.cgafaq.info/wiki/Polygon_Area.
     """
-    #xs, ys = ring.coords.xy
-    #xs.append(xs[1])
-    #ys.append(ys[1])
-    #return sum(xs[i]*(ys[i+1]-ys[i-1]) for i in range(1, len(ring.coords)))/2.0
     v2 = np.roll(ring, -1, axis=0)
     return np.cross(ring, v2).sum() / 2.0
      
 ## CREATING CONTOUR AND EXTRACTING LINESTRINGS/POLYGONS FOR EVERY TIMESTEP ##
 for i in range(len(time_var)):
-    print "Time step "
-    print i
-    if vchoice == 'Y':
-        fol = kml.newfolder(name = foldname)
+    print "Time step " + str(i)
+    if viztype ==  'kmz':
+        fol = kml.newfolder(name = fileTypesKMLFolderNames[filetype])
+
         fol.region = reg
         store = {}
         for k in range(len(levels)):
             multipol = fol.newmultigeometry(name= 'Level' + str(k))
             store[k] = multipol
-    if filechoice == 6:
+    if filetype == 'fort.74.nc':
         wind[i] = []
         for j in range(len(windx[i])):
             wind[i].append(math.sqrt(windx[i][j]**2+windy[i][j]**2))
-    print vchoice,domain,choice
-    if vchoice == 'Y' and domain == 'Y' and choice == 'B':
+    if viztype ==  'kmz' and subplots == 'yes' and polytype == 'polygon':
         ## Creating polygon KML files by combining contour plots of subdomains specified in bins ##
         for v in bins:
             ## Printing the long/lat box ##       
-            print v
+            #print 'bin is ' + str(v)
             localy = []
             localx =[]
             localelements = []
             ## Extracting local mesh for each long/latbox ## 
-            localy,localx,localelements,localvar = latlonbox(v[0],v[1],v[2],v[3],lonlatbuffer)
+            localy,localx,localelements,localvar = createSubmeshWithinSpecifiedLatLonBox(v[0],v[1],v[2],v[3],lonlatbuffer)
             if localelements ==[]:
                 print localelements
                 continue
             ## Triangulating for each local mesh ##
             tri = matplotlib.tri.Triangulation(localx,localy,triangles=localelements)
-            print 'Here'           
             ## Plotting filled contour for each local mesh ##
-            contour = pplot.tricontourf(tri, localvar,levels=levels,shading='faceted')
-          
+            print 'INFO: Plotting filled contour for each local mesh.'
+            #print 'localvar is ' + str(localvar)
+            contour = pplot.tricontourf(tri, localvar,levels=levels,shading='faceted')          
             m = 0           
             for colli,coll in enumerate(contour.collections):
                 vmin,vmax = contour.levels[colli:colli+2]
-                print 'Level %d' %m
-                print vmin,vmax
+                #print 'Level %d' %m
+                #print vmin,vmax
                 ## Extracting the path objects corresponding to each contour level ##         
                 for p in coll.get_paths():
                     p.simplify_threshold = 0.0
                     ## converting each path object to a set of polygons  - polys ##
-                    #polys = []
-                    #polys = p.to_polygons()
-                    #j = -1
                     ## Deleting any polygons having less than 3 vertices ## 
                     polys = [g for g in p.to_polygons() if g.shape[0] >=3] 
                     if len(polys)>0:
-                       #for k in polys:
-                            #j = j+1
-                            ## Deleting any polygons having less than 3 vertices ##
-                            #if k.shape[0]<3:
-                                #polys.pop(j)          
-                       ## polys is converted to a list of tuples (polys1). Each tuple representing a polygon ##
-                       polys1 = []
-                       for g in polys:
-                            polys1.append(list(map(tuple,g)))   
-                       inner = []
-                       outer = []
-                       ## Finding out which of the polygons within polys1 are outer and inner polygons (or holes)
-                       ## by calculating their signed area. If area is positive it is an outer polygon and if it is negative
-                       ## it is a inner polygon
-                       for i in range(len(polys1)):
+                        ## polys is converted to a list of tuples (polys1). Each tuple representing a polygon ##
+                        polys1 = []
+                        for g in polys:
+                             polys1.append(list(map(tuple,g)))   
+                        inner = []
+                        outer = []
+                        ## Finding out which of the polygons within polys1 are outer and inner polygons (or holes)
+                        ## by calculating their signed area. If area is positive it is an outer polygon and if it is negative
+                        ## it is a inner polygon
+                        for i in range(len(polys1)):
                             polys1[i] = LinearRing(polys[i])
                             s = float(1.0)
-                            if signed_area(polys1[i])/s >=0.0:
+                            if signedArea(polys1[i])/s >=0.0:
                                 outer.append(list(polys1[i].coords))
                             else:
                                 inner.append(list(polys1[i].coords))
-                       ## Need to identify which are the inner polygons (from inner) which fall inside each of the outer polygons (from outer).
-                       ## topo = {<index of Outer Polygon 1 in outer>:<index of polygon in inner which falls in this outer polygon>, <index of Outer Polygon 2 in outer>: <.......>, ...}         
-                       topo = {}
-                       for i in range(len(outer)):
+                        ## Need to identify which are the inner polygons (from inner) which fall inside each of the outer polygons  (from outer).
+                        ## topo = {<index of Outer Polygon 1 in outer>:<index of polygon in inner which falls in this outer polygon>, <index of Outer Polygon 2 in outer>: <.......>, ...}         
+                        topo = {}
+                        for i in range(len(outer)):
                             topo[i] = []
                             for j in range(len(inner)):
                                 inside = 0
@@ -550,146 +578,80 @@ for i in range(len(time_var)):
                 ## Setting the kml multigeometry object properties ##
                 store[m].visibility = 1
                 store[m].style.polystyle.fill = 1
-                print m
-                store[m].style.polystyle.color = simplekml.Color.hex(hex[m][1:])
+                #print m
+                store[m].style.polystyle.color = simplekml.Color.hex(hexColorsList[m][1:])
                 store[m].style.polystyle.outline = 0
-                store[m].style.linestyle.color = simplekml.Color.hex(hex[m][1:])
-                ## These are all optional properties ##
-                        #multipol.style.linestyle.width = 3.0 
-                #s = "                         min = " + str(vmin) + " ft, max = " +str(vmax) +" ft" 
-                #store[m].style.balloonstyle.text = s
-                #store[m].style.balloonstyle.bgcolor = simplekml.Color.greenyellow
-                #store[m].style.balloonstyle.textcolor = simplekml.Color.black
-                #store[m].description = s
-                m = m+1
-                
+                store[m].style.linestyle.color = simplekml.Color.hex(hexColorsList[m][1:])
+                m = m+1               
     else:
-               ## Writing shapefiles/KML files  for entire domain ##
-               ## Writing KML files for entire domain in one step may not allow polygons to be rendered correctly ##
-                if choice == 'A':
-                    ## To create POLYLINE files ##
-                    if filechoice == 5:
-                        #levels = linspace(-1,var[i].data.max(),num)
-                        levels = [0,1,2,3,4,5,6,7,8]
-                        contour = pplot.tricontour(tri, var[i],levels=levels)                    
-                    elif filechoice == 6:
-                        levels = linspace(min(wind[i]),max(wind[i]),num)
-                        contour = pplot.tricontour(tri,wind[i],levels=levels)
-                    elif filechoice == 7:    
-                        levels = linspace(0,var[i].data.max(),num)
-                        contour = pplot.tricontour(tri, var[i],levels=levels)
-                    else:
-                        contour = pplot.tricontour(tri, var,levels = levels)
-                    geoms[time_var[i]] = []
-                    print time_var[i]
-                    m = 0
-                    for colli,coll in enumerate(contour.collections):
-                        val = contour.levels[colli]
-                        print 'Level %d' %m
-                        print val
-                        for pp in coll.get_paths():
-                            if len(pp.vertices) > 1:
-                                ## Extracting the vertices of each of the paths corrsponding to each contour level ##
-                                ## and wrapping them up in a shapely Linestring object ##
-                                geoms[time_var[i]].append((LineString(pp.vertices),val))
-                        m = m + 1
-                elif choice == 'B':
-                    ## To create POLYGON files ##
-                    if filechoice == 5:
-                        #levels = np.linspace(-1,var[i].data.max(),num)
-                        levels = [0,0.25,0.5,0.75,1,1.25,1.5,1.75,2.0,2.25,2.5]
-                        var = nc[vname][i][:]
-                        print levels
-                        #var = np.multiply(3.28084,var)
-                        #np.place(var,var > 8,[7.99])
-                        if var.mask.any():
-                            point_mask_indices = np.where(var.mask)
-                            tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
-                            print len(tri_mask)
-                            tri.set_mask(tri_mask)                
-                        np.place(var,var > 2.5,[2.49])
-                        np.place(var, (-100 < var) & (var < 0),[0])    
-                        contour = pplot.tricontourf(tri, var,levels=levels)                    
-                    elif filechoice == 6:
-                        #levels = np.linspace(min(wind[i]),max(wind[i]),num)
-                        #levels = [0,2.5,5,7.5,10,12.5,15,17.5,20,22.5,25,27.5,30,32.5,35,37.5,40,42.5,45]
-                        levels = [0,5,10,15,20,25,30,35,40]
-                        print levels
-                        contour = pplot.tricontourf(tri,wind[i],levels=levels)
-                    elif filechoice == 7:
-                        var = nc[vname][i][:]
-                        print type(var)                     
-                        #var = np.multiply(3.28084,var)
-                        # np.place(var,var > 10,[9.99])
-                        #levels = np.linspace(0,var[i].data.max(),num)
-                        levels = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14]
-                        print type(var)
-                        #print stop
-                        if var.mask.any():
-                            print "yes"
-                            point_mask_indices = np.where(var.mask)
-                            tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
-                            print len(tri_mask)
-                            tri.set_mask(tri_mask)                
-                        contour = pplot.tricontourf(tri, var,levels=levels)
-                    elif filechoice == 9:
-                        var = nc[vname][i][:]
-                        print 'Maximum = {0}'.format(var.data.max())
-                        np.place(var,var > 20,[19.99])
-                        levels = [0,2,4,6,8,10,12,14,16,18,20]
-                        #levels = [0,4,8,12,16,20,24,28,32]
-                        if var.mask.any():
-                            print "yes"
-                            point_mask_indices = np.where(var.mask)
-                            tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
-                            print len(tri_mask)
-                            tri.set_mask(tri_mask)                                       
-                        contour = pplot.tricontourf(tri, var,levels=levels)
-                        pplot.show()
-                    elif filechoice == 10:
-                        var = nc[vname][i][:]
-                        np.place(var,var > 15,[14.99])
-                        print 'Maximum = {0}'.format(var.data.max())
-                        #levels = [0,30,60,90,120,150,180,210,240]
-                        #levels = [0,2,4,6,8,10,12,14,16]
-                        levels = [0,4,8,16,20,24,28,32]
-                        contour = pplot.tricontourf(tri, var,levels=levels)                       
-                    else :
-                        print var.dtype
-                        if  filechoice != 1 and filechoice != 3 and var.mask.any():
-                            point_mask_indices = np.where(var.mask)
-                            tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
-                            tri.set_mask(tri_mask)
-
-####                        var = np.multiply(3.28084,var)
-####                        np.place(var,var > 8,[7.99])
-####                        np.place(var, (-100 < var) & (var < 0),[0]) 
-##
-                        contour = pplot.tricontourf(tri, var,levels = levels)
+        ## Writing shapefiles/KML files  for entire domain ##
+        ## Writing KML files for entire domain in one step may not allow polygons to be rendered correctly ##
+        if polytype == 'polyline':
+            ## To create POLYLINE files ##
+            if filetype in timeVaryingFiles:
+                var = nc[fileTypesNetCDFVarNames[filetype]][i][:]
+                # convert units if necessary
+                if units == 'english':
+                   var = np.multiply(float(fileTypesEnglishUnitsConversions[filetype]),var)
+            contour = pplot.tricontour(tri, var,levels=levels)
+            geoms[time_var[i]] = []
+            print time_var[i]
+            m = 0
+            for colli,coll in enumerate(contour.collections):
+                val = contour.levels[colli]
+                print 'Level %d' %m
+                print val
+                for pp in coll.get_paths():
+                    if len(pp.vertices) > 1:
+                        ## Extracting the vertices of each of the paths corrsponding to each contour level ##
+                        ## and wrapping them up in a shapely Linestring object ##
+                        geoms[time_var[i]].append((LineString(pp.vertices),val))
+                m = m + 1
+        elif polytype == 'polygon':
+            ## To create POLYGON files ##
+                    if filetype in timeVaryingFiles:
+                        var = nc[fileTypesNetCDFVarNames[filetype]][i][:]
+                    # construct mask
+                    if filetype in requireFill and var.mask.any():
+                        point_mask_indices = np.where(var.mask)
+                        tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
+                        tri.set_mask(tri_mask)                
+                    # convert units if necessary
+                    if filetype in timeVaryingFiles:
+                        if units == 'english':
+                            var = np.multiply(float(fileTypesEnglishUnitsConversions[filetype]),var)
+                        # limit range to the contour range
+                        np.place(var,var > max(levels),max(levels)-0.01)   
+                        np.place(var,(-100 < var) & (var < min(levels)),min(levels)) 
+                    contour = pplot.tricontourf(tri, var,levels=levels)
                     geoms[time_var[i]] = []
                     m = 0
                     l = len(contour.collections)
                     for colli,coll in enumerate(contour.collections):
-                        print 'Level %d'%m
                         vmin,vmax = contour.levels[colli:colli+2]
-                        print vmin,vmax
-                        if vchoice == 'Y':
+                        if viztype ==  'kmz':
                            multipol = fol.newmultigeometry(name= 'Level' + str(m))                         
                         for p in coll.get_paths():
                             p.simplify_threshold = 0.0
-                            # Removing polygons which have less than threee coordinates to describe its boundary
+                            # 
+                            # Removing polygons which have less than three 
+                            # coordinates to describe its boundary
                             polys = [g for g in p.to_polygons() if g.shape[0] >=3] 
-                            ## Extracting the vertices of each of the paths corrsponding to each contour level ##
-                            ## and wrapping them up in a shapely Polygon object ##
-                            ## The geometry information with the contour levels is stored in geoms
-                            outer,inner = classify_polygons(polys)
+                            #
+                            # Extracting the vertices of each of the paths 
+                            # corrsponding to each contour level and wrapping 
+                            # them up in a shapely Polygon object 
+                            #
+                            # The geometry information with the contour 
+                            # levels is stored in geoms
+                            outer,inner = classifyPolygons(polys)
                             if len(inner)>0:
                                 inner_points = [pts[0] for pts in inner]
                             overall_inout = np.zeros((len(inner),),dtype = np.bool)
                             
                             for out in outer:
                                 if len(inner) > 0:
-                                    inout = points_inside_poly(inner_points,out)
+                                    inout = pointsInsidePoly(inner_points,out)
                                     overall_inout = np.logical_or(overall_inout, inout)
                                     out_inner = [g for f, g in enumerate(inner) if inout[f]]
                                     poly = Polygon(out, out_inner)
@@ -705,15 +667,15 @@ for i in range(len(time_var)):
                             # collect all interiors which do not belong to any of the exteriors
                             outer_interiors = [interior for s,interior in enumerate(inner) if not overall_inout[s]]
                             for k in outer_interiors:
-                                poly = Polygon(reverse_geometry(k))
+                                poly = Polygon(reverseGeometry(k))
                                 # clean-up polygons (remove intersections)
                                 if not poly.is_valid:
                                     poly = poly.buffer(0.0)
                                 if poly.is_empty:
                                     continue
                                 geoms[time_var[i]].append((poly,vmin,vmax))
-                            print len(geoms[time_var[i]])
-                            if vchoice == 'Y':
+                            #print len(geoms[time_var[i]])
+                            if viztype ==  'kmz':
                                 ## Creating kml files for the whole domain - this is not recommended for very fne meshes ##
                                 ## due to the restrictions on the maximum number of vertices (31000) for a kml polygon object. ##
                                 ## This restriction does not allow the polygons to be plotted correctly ##
@@ -731,156 +693,74 @@ for i in range(len(time_var)):
                                 pol.style.balloonstyle.bgcolor = simplekml.Color.brown
                                 pol.style.balloonstyle.textcolor = simplekml.Color.black
                                 pol.description = s
-                        m = m+1
-                    
-## KEEPING TRACK OF RUNNING TIME ##
-if  vchoice == 'X':
+                        m = m+1                    
+#
+# KEEPING TRACK OF RUNNING TIME ##
+if  viztype ==  'shapefile':
     print 'Finished contouring, extracting information and creating polygons after %d seconds'% (time.time()-time0)
 else:
     print 'Finished contouring, extracting information and creating multigeometry polygons after %d seconds'% (time.time()-time0)
-
-if vchoice == 'X':
-    ## DEFINING SCHEMA & WRITING SHAPE FILE  ##                    
-    if filechoice == 1 and choice == 'A':        
-            schema = { 'geometry': 'LineString', 'properties': {'waterdepth': 'float'}}
+#
+fileTypesShapeVarNames = { 'bathytopo' : 'waterdepth', 'maxele.63.nc' : 'maxelev', 'maxwvel.63.nc' : 'maxwvel', 'swan_HS_max.63.nc' : 'maxwvht', 'fort.63.nc' : 'elevat', 'fort.74.nc' : 'wvel', 'swan_HS.63.nc' : 'wavht' }
+#
+fileTypesShapeVarPrefixes = { 'bathytopo' : 'd', 'maxele.63.nc' : 'ele', 'maxwvel.63.nc' : 'wvel', 'swan_HS_max.63.nc' : 'wvht', 'fort.63.nc' : 'ele', 'fort.74.nc' : 'wvel', 'swan_HS.63.nc' : 'wavht', 'swan_TPS.63.nc' : 'wvpd', 'swan_TPS_max.63.nc' : 'peakpd', 'swan_TMM10.63.nc' : 'meanpd' }
+#
+shapeVarSuffixes = [ 'min', 'max', 'avg' ]
+#
+#
+# DEFINING SCHEMA & WRITING SHAPE FILE
+if viztype ==  'shapefile':
+    # use default shapefile names if nothing else was specified
+    if outputfile == 'null':
+        outputname = fileTypesDefaultOutputShapeFileNames[filetype]
+    else:
+        outputname = outputfile
+    if polytype == 'polyline':
+        if filetype in timeVaryingFiles:           
+            schema = { 'geometry': 'LineString', 'properties': { fileTypesShapeVarNames[filetype] : 'float','timestep':'str'}}
             with fiona.open(outputname, 'w',driver,schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'waterdepth': g[1]}})
-    elif filechoice == 1 and choice == 'B':                
-            schema = { 'geometry': 'Polygon', 'properties': {'dmin': 'float', 'dmax': 'float', 'davg':'float'}}
-            with fiona.open(outputname, 'w',driver,schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'dmin': g[1], 'dmax': g[2], 'davg': (g[1]+g[2])/2.0}})
-    elif filechoice == 2 and choice == 'A':
-            schema = { 'geometry': 'LineString', 'properties': {'maxelev': 'float'}}
-            with fiona.open(outputname, 'w',driver,schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'maxelev': g[1]}})
-    elif filechoice == 2 and choice == 'B':
-            schema = { 'geometry': 'Polygon', 'properties': { 'elemin': 'float', 'elemax': 'float', 'eleavg': 'float' } }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'elemin': g[1], 'elemax': g[2],'eleavg': (g[1]+g[2])/2.0}})
-    elif filechoice == 3 and choice == 'A':
-            schema = { 'geometry': 'LineString', 'properties': {'wvel': 'float'}}
-            with fiona.open(outputname, 'w',driver,schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'wvel': g[1]}})
-    elif filechoice == 3 and choice == 'B':
-            schema = { 'geometry': 'Polygon', 'properties': { 'wvelmin': 'float', 'wvelmax': 'float', 'wvelavg': 'float' } }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'wvelmin': g[1], 'wvelmax': g[2], 'wvelavg': (g[1]+g[2])/2.0}})
-    elif filechoice == 4 and choice == 'A':
-            schema = { 'geometry': 'LineString', 'properties': {'wvht': 'float'}}
-            with fiona.open(outputname, 'w',driver,schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'wvel': g[1]}})
-    elif filechoice == 4 and choice == 'B':
-            schema = { 'geometry': 'Polygon', 'properties': { 'wvhtmin': 'float', 'wvhtmax': 'float', 'wvhtavg': 'float' } }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'wvhtmin': g[1], 'wvhtmax': g[2], 'wvhtavg': (g[1]+g[2])/2.0}})
-    elif filechoice == 5 and choice == 'A':        
-        schema = { 'geometry': 'LineString', 'properties': {'elevat': 'float','timestep':'str'}}
-        with fiona.open(outputname, 'w',driver,schema,crs) as c:
-            for geom in geoms:
-                k = list(time_var).index(geom)
-                print k
-                for g in geoms[geom]:
-                    c.write({'geometry': mapping(g[0]),'properties': {'elevat': g[1],'timestep':a[k]}})
-        
-    elif filechoice == 5 and choice == 'B':                
-            schema = { 'geometry': 'Polygon', 'properties': { 'elemin': 'float', 'elemax': 'float','eleavg': 'float','timestep':'str' ,'t' : 'float'} }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
                 for geom in geoms:
                     k = list(time_var).index(geom)
                     print k
                     for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'elemin': g[1], 'elemax': g[2],'eleavg': (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})
-    elif filechoice == 6 and choice == 'A':        
-        schema = { 'geometry': 'LineString', 'properties': {'wvel': 'float','timestep':'str'}}
-        with fiona.open(outputname, 'w',driver,schema,crs) as c:
-            for geom in geoms:
-                k = list(time_var).index(geom)
-                print k
-                for g in geoms[geom]:
-                    c.write({'geometry': mapping(g[0]),'properties': {'wvel': g[1],'timestep':a[k]}})
+                        c.write({'geometry': mapping(g[0]),'properties': { fileTypesShapeVarNames[filetype] : g[1],'timestep':a[k]}})
+        else:
+            schema = { 'geometry': 'LineString', 'properties': { fileTypesShapeVarNames[filetype] : 'float'}}
+            with fiona.open(outputname, 'w',driver,schema,crs) as c:
+                for geom in geoms:
+                    for g in geoms[geom]:
+                        c.write({'geometry': mapping(g[0]),'properties': { fileTypesShapeVarNames[filetype] : g[1]}})
 
-    elif filechoice == 6 and choice == 'B':                
-        schema = { 'geometry': 'Polygon', 'properties': { 'wvelmin': 'float', 'wvelmax': 'float','wvelavg':'float','timestep':'str' ,'t' : 'float'} }
-        with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-            for geom in geoms:
-                k = list(time_var).index(geom)
-                print k
-                for g in geoms[geom]:
-                    c.write({'geometry': mapping(g[0]),'properties': {'wvelmin': g[1], 'wvelmax': g[2], 'wvelavg': (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})
-    elif filechoice == 7 and choice == 'A':        
-        schema = { 'geometry': 'LineString', 'properties': {'wavht': 'float','timestep':'str'}}
-        with fiona.open(outputname, 'w',driver,schema,crs) as c:
-            for geom in geoms:
-                k = list(time_var).index(geom)
-                print k
-                for g in geoms[geom]:
-                    print type(g)
-                    c.write({'geometry': mapping(g[0]),'properties': {'wavht': g[1],'timestep':a[k]}})
-
-    elif filechoice == 7 and choice == 'B':                
-            schema = { 'geometry': 'Polygon', 'properties': { 'wavhtmin': 'float', 'wavhtmax': 'float','wavhtavg':'float','timestep':'str' ,'t' : 'float'} }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
+    elif polytype == 'polygon':
+        # create the list of variable names for min max and average
+        shapeVars = [ fileTypesShapeVarPrefixes[filetype] + x for x in shapeVarSuffixes ]  
+        if filetype in timeVaryingFiles:           
+            schema = { 'geometry': 'Polygon', 'properties': { shapeVars[0] : 'float', shapeVars[1]: 'float', shapeVars[2] : 'float','timestep':'str' ,'t' : 'float'} }
+            with fiona.open(outputname, 'w', driver, schema,crs) as c:
                 for geom in geoms:
                     k = list(time_var).index(geom)
                     print k
                     for g in geoms[geom]:
+                        c.write({'geometry': mapping(g[0]),'properties': { shapeVars[0]: g[1], shapeVars[1] : g[2], shapeVars[2] : (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})
+        else:
+            schema = { 'geometry': 'Polygon', 'properties': { shapeVars[0]: 'float', shapeVars[1]: 'float', shapeVars[2]:'float'}}
+            with fiona.open(outputname, 'w',driver,schema,crs) as c:
+                for geom in geoms:
+                    for g in geoms[geom]:
+                        c.write({'geometry': mapping(g[0]),'properties': {shapeVars[0]: g[1], shapeVars[1]: g[2], shapeVars[2]: (g[1]+g[2])/2.0}})
                         
-                        c.write({'geometry': mapping(g[0]),'properties': {'wavhtmin': g[1], 'wavhtmax': g[2],'wavhtavg': (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})
-                        
-    elif filechoice == 8 and choice == 'B':
-            schema = { 'geometry': 'Polygon', 'properties': { 'wvpdmin': 'float', 'wvpdmax': 'float', 'wvpdavg': 'float' } }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'wvpdmin': g[1], 'wvpdmax': g[2], 'wvpdavg': (g[1]+g[2])/2.0}})
-
-    elif filechoice == 9 and choice == 'B':                
-            schema = { 'geometry': 'Polygon', 'properties': { 'peakpdmin': 'float', 'peakpdmax': 'float','peakpdavg':'float','timestep':'str' ,'t' : 'float'} }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    k = list(time_var).index(geom)
-                    print k
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'peakpdmin': g[1], 'peakpdmax': g[2],'peakpdavg': (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})                          
-    elif filechoice == 10 and choice == 'B':                
-            schema = { 'geometry': 'Polygon', 'properties': { 'meanpdmin': 'float', 'meanpdmax': 'float','meanpdavg':'float','timestep':'str' ,'t' : 'float'} }
-            with fiona.open(outputname, 'w', 'ESRI Shapefile', schema,crs) as c:
-                for geom in geoms:
-                    k = list(time_var).index(geom)
-                    print k
-                    for g in geoms[geom]:
-                        c.write({'geometry': mapping(g[0]),'properties': {'meanpdmin': g[1], 'meanpdmax': g[2],'meanpdavg': (g[1]+g[2])/2.0,'timestep':a[k],'t':time_var[k]}})                          
-
-
-    
-elif vchoice == 'Y':
-    ## Specifying the kml file name and saving file ##
-    filename = foldname +'.kml'
-    kml.save(filename)
+elif viztype ==  'kmz':
+    # Specifying the kml file name and saving file 
+    # use default kml name if nothing else was specified
+    if outputfile == 'null':
+        kmlFileName = fileTypesKMLFolderNames[filetype] +'.kml'       
+    else:
+        kmlFileName = outputfile + '.kml'
+    kml.save(kmlFileName)
 
     
 ## KEEPING TRACK OF RUNNING TIME ##
-if vchoice == 'X':
+if viztype ==  'shapefile':
     print 'Finished generating shapefile after  %d seconds'% (time.time()-time0)
 else:
     print 'Finished generating KML file after %d seconds'% (time.time()-time0)
-
-        
- 
-                    
