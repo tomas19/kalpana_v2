@@ -82,7 +82,7 @@ if options.storm == "null" :
     print ("bathytopo (reads maxele.63.nc)")
     print ("maxele.63.nc")
     print ("maxwvel.63.nc")
-    print ("swan_maxHS.63.nc")
+    print ("swan_HS_max.63.nc")
     print ("fort.63.nc")
     print ("fort.74.nc")
     print ("swan_HS.63.nc")
@@ -113,6 +113,7 @@ if options.storm == "null" :
     contourrange = 'null'
     datumlabel = 'msl'
     specifiedticks = 'null'
+    outputfile = 'null'
 else:
     filetype=options.filetype
     filename=options.filename
