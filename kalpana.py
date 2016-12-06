@@ -1,6 +1,4 @@
-#Nelson and Casey were here.
-#Nelson and Casey were here again.
-#This is comment number 3.
+#Hopefully last superficial change.
 import matplotlib
 matplotlib.use('Agg')
 import pylab as pl
