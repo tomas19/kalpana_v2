@@ -66,6 +66,8 @@ parser.add_option("-r", "--contourrange", dest="contourrange", default="null", h
 parser.add_option("-k", "--ticks", dest="specifiedticks", default="null", help="colorbar tick labels")
 parser.add_option("-l", "--lonlatbox", dest="l", default="36 33.5 -60 -100",help="local box : NorthLat SouthLat EastLong WestLong")
 parser.add_option("-u", "--lonlatbuffer", dest="lonlatbuffer", default="0",help="longitude latitude buffer")
+parser.add_option("-c", "--datumconv", dest="datumconv", default="no", help="datum conversion from MSL to NAVD88 (yes or no)")
+parser.add_option("-x", "--datumtextfile", dest="datumtextfile", default="rasterdeltas_capped.txt", help="name of text file for datum conversion")
 (options, args) = parser.parse_args()
 #nc=netCDF4.Dataset('http://opendap.renci.org:1935/thredds/dodsC/ASGS/arthur/10/nc_inundation_v9.99/hatteras.renci.org/nchi/nhcConsensus/maxele.63.nc').variables
 #'http://opendap.renci.org:1935/thredds/dodsC/tc/arthur/12/nc6b/hatteras.renci.org/nclo/nhcConsensus/maxele.63.nc'
@@ -98,6 +100,10 @@ if options.storm == "null" :
     polytype = raw_input('Enter your choice of vector shape (polyline or polygon) : ')
     viztype = raw_input('Enter your choice of visualization (GIS Shape File or Google Earth (KMZ))  (shapefile or kmz): ')
     subplots = raw_input('Do you want to make subplots first (with longlat boxes) and then plot full domain (yes or no)')
+    if filetype == 'maxele.63.nc' or filetype == '2':
+        datumconv = raw_input('Do you want to convert datum from MSL to NAVD-88 (yes or no): ')
+        if datumconv == 'yes':
+            datumtextfile = raw_input('Please specify name of raster text file for interpolation: ')
     if viztype == 'kmz' or viztype == 'Y':
         l= raw_input('Enter local box : NorthLat SouthLat EastLong WestLong :')
         if filetype == '1' or filetype == '2' or filetype == '3' or filetype == '4' or filetype == '8':
@@ -134,6 +140,8 @@ else:
     specifiedticks=options.specifiedticks
     units=options.units
     datumlabel=options.datumlabel
+    datumconv=options.datumconv
+    datumtextfile=options.datumtextfile
 # 
 # jgf: Change the input values to something more intuitive if necessary
 #print 'INFO: storm is ' + storm
@@ -271,6 +279,67 @@ lat = nc['y'][:]
 # Extracting element description details (list of 3 vertices specified 
 # for each triangle denoted by index number) from the output file 
 nv = nc['element'][:,:] -1
+#
+# read datum conversion raster
+def readraster(rasterfile):   
+    f = open(rasterfile)
+    deltas = np.empty((703,803))  
+    s = f.readline()
+    for i in range(703):
+        for j in range(803):
+            deltas[i,j] = float(s)
+            s = f.readline()
+    f.close()
+    return deltas
+#
+# convert datum from MSL to NAVD-88 by interpolating from raster    
+def interpolate(xres, yres):
+    xmin, xmax, ymin, ymax = -79.11, -75.10, 33.355, 36.865 
+    ##coordinates defining rectangle of raster
+    for i in range(len(var)):   
+        if xmin <= lon[i] <= xmax and ymin <= lat[i] <= ymax:
+            col1 = int((lon[i] - xmin)//xres)
+            row1 = int((ymax - lat[i])//yres)
+            col2 = col1 + 1
+            row2 = row1 + 1
+            x1 = xmin + col1*xres
+            y1 = ymax - row1*yres
+            x2 = x1 + xres
+            y2 = y1 - yres
+            if lat[i] == y2 and lon[i] == x1:
+                avgdelta = deltas[row2,col1] 
+            elif lat[i] == y2 and lon[i] == x2:
+                avgdelta = deltas[row2,col2] 
+            elif lat[i] == y1 and lon[i] == x1:
+                avgdelta = deltas[row1,col1]                
+            elif lat[i] == y1 and lon[i] == x2:
+                avgdelta = deltas[row1,col2]
+            else:
+                dll = ((lon[i] - x1)**2 + (lat[i] - y2)**2)**0.5
+                dlr = ((lon[i] - x2)**2 + (lat[i] - y2)**2)**0.5
+                dul = ((lon[i] - x1)**2 + (lat[i] - y1)**2)**0.5
+                dur = ((lon[i] - x2)**2 + (lat[i] - y1)**2)**0.5
+                ##dll=distance to lower left corner of raster cell, etc.                
+                if lat[i] == y1:
+                    avgdelta = (deltas[row1,col1]/dul + deltas[row1,col2]/dur)/(1/dul + 1/dur)
+                elif lat[i] == y2:
+                    avgdelta = (deltas[row2,col1]/dll + deltas[row2,col2]/dlr)/(1/dll + 1/dlr)
+                elif lon[i] == x1: 
+                    avgdelta = (deltas[row1,col1]/dul + deltas[row2,col1]/dll)/(1/dul + 1/dll)
+                elif lon[i] == x2:
+                    avgdelta = (deltas[row1,col2]/dur + deltas[row2,col2]/dlr)/(1/dur + 1/dlr)
+                else:                    
+                    avgdelta = (deltas[row2,col1]/dll + deltas[row2,col2]/dlr + deltas[row1,col1]/dul + deltas[row1,col2]/dur)/(1/dll + 1/dlr + 1/dul + 1/dur)
+        else:
+            avgdelta = 0
+        var[i] = var[i] - avgdelta
+    return var
+#
+if datumconv == 'yes':
+    time1 = time.time()    
+    deltas = readraster(datumtextfile)
+    var = interpolate(0.005,0.005)
+    print 'Time to run datum conversion: ', time.time() - time1
 #
 # Extracting time step information from the output file 
 time_var= nc['time']
