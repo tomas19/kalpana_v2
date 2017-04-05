@@ -35,7 +35,7 @@ from optparse import OptionParser
 #
 # Time step information (time`_`var) Used to extract startdate.
 #
-# The time step values are converted into ‘datetime’ objects and then 
+# The time step values are converted into 'datetime' objects and then 
 # into a string format to use while writing shapefiles later 
 # (used for time series output data).
 #
@@ -651,7 +651,6 @@ for i in range(len(time_var)):
                 #print m
                 store[m].style.polystyle.color = simplekml.Color.hex(hexColorsList[m][1:])
                 store[m].style.polystyle.outline = 0
-                store[m].style.linestyle.color = simplekml.Color.hex(hexColorsList[m][1:])
                 m = m+1               
     else:
         ## Writing shapefiles/KML files  for entire domain ##
@@ -682,7 +681,7 @@ for i in range(len(time_var)):
                     if filetype in timeVaryingFiles:
                         var = nc[fileTypesNetCDFVarNames[filetype]][i][:]
                     # construct mask
-                    if filetype in requireFill and var.mask.any():
+                    if filetype in requireFill and type(var) == "MaskedArray" and var.mask.any():
                         point_mask_indices = np.where(var.mask)
                         tri_mask = np.any(np.in1d(nv,point_mask_indices).reshape(-1,3),axis=1)
                         tri.set_mask(tri_mask)                
@@ -755,9 +754,8 @@ for i in range(len(time_var)):
                                     pol.outerboundaryis = polys[i]
                                 multipol.visibility = 1
                                 multipol.style.polystyle.fill = 1
-                                multipol.style.polystyle.color = simplekml.Color.hex(d['hex'][m][1:])
+                                multipol.style.polystyle.color = simplekml.Color.hex(hexColorsList[m][1:])
                                 multipol.style.polystyle.outline = 0
-                                multipol.style.linestyle.color = simplekml.Color.hex(d['hex'][m][1:]) 
                                 s = "       min = " + str(vmin) + " ft, max = " +str(vmax) +" ft"
                                 pol.style.balloonstyle.text = s
                                 pol.style.balloonstyle.bgcolor = simplekml.Color.brown
