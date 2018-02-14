@@ -12,6 +12,7 @@ import collections
 import simplekml
 import math
 import sys
+import pdb
 from optparse import OptionParser
 #---------------------------------------------------------------------
 #---------------------------------------------------------------------
@@ -185,7 +186,7 @@ if viztype ==  'kmz':
     bins.append([gdomain[0],local[0],gdomain[2],gdomain[3]])
     #print bins
 #
-fileTypesColorBarNames = { 'maxele.63.nc' : 'Colorbar-water-levels.png', 'swan_HS_max.63.nc' : 'Colorbar-wave-heights.png', 'maxwvel.63.nc' : 'Colorbar-wind-speeds.png', 'swan_TPS_max.63.nc' : 'Colorbar-wave-periods.png', 'bathytopo' : 'Colorbar-bathymetry.png' }
+fileTypesColorBarNames = { 'fort.63.nc': 'Colorbar-water-levels.png', 'maxele.63.nc' : 'Colorbar-water-levels.png', 'swan_HS_max.63.nc' : 'Colorbar-wave-heights.png', 'maxwvel.63.nc' : 'Colorbar-wind-speeds.png', 'swan_TPS_max.63.nc' : 'Colorbar-wave-periods.png', 'bathytopo' : 'Colorbar-bathymetry.png' }
 fileTypesNetCDFVarNames = { 'bathytopo' : 'depth', 'maxele.63.nc' : 'zeta_max', 'maxwvel.63.nc' : 'wind_max', 'swan_HS_max.63.nc' : 'swan_HS_max', 'fort.63.nc' : 'zeta', 'fort.74.nc' : [ 'windx', 'windy' ], 'swan_HS.63.nc' : 'swan_HS', 'swan_TPS_max.63.nc' : 'swan_TPS_max', 'swan_TPS.63.nc' : 'swan_TPS', 'swan_TMM10.63.nc' : 'swan_TMM10' }
 fileTypesDefaultPaletteFileNames = { 'bathytopo' : 'mesh-bathy.pal', 'maxele.63.nc' : 'water-level.pal', 'maxwvel.63.nc' : 'wind-speed.pal', 'swan_HS_max.63.nc' : 'wavht.pal', 'swan_TPS_max.63.nc' : 'wavht.pal' }       
 fileTypesKMLFolderNames = { 'bathytopo' : 'Bathymetry', 'maxele.63.nc' : 'Maximum-Water-Levels', 'maxwvel.63.nc' : 'Maximum Wind Velocity', 'swan_HS_max.63.nc' : 'Maximum-Wave-Heights', 'swan_TPS_max.63.nc' : 'Maximum-Wave-Period' }
@@ -692,6 +693,7 @@ for i in range(len(time_var)):
                         # limit range to the contour range
                         np.place(var,var > max(levels),max(levels)-0.01)   
                         np.place(var,(-100 < var) & (var < min(levels)),min(levels)) 
+                    pdb.set_trace()
                     contour = pplot.tricontourf(tri, var,levels=levels)
                     geoms[time_var[i]] = []
                     m = 0
