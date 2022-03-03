@@ -12,6 +12,7 @@ from shapely.geometry import Polygon, LineString
 from tqdm import tqdm
 import itertools
 import netCDF4 as netcdf
+import simplekml
 
 def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
@@ -81,14 +82,12 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     gdf['labelCol'] = [f'{x:0.2f} {units}' for x in values]
     
     if its != None:
-        gdf['nTimeStep'] = [its]*len(lines)
         t0 = int(ncObj['time'][0])
-        # epoch = pd.to_datetime(ncObj['time'].base_date)
-        epoch = ncObj['time'].base_date
         ti = int(ncObj['time'][its])
-        gdf['nHours'] = [(ti - t0)/3600]*len(lines)
-        currDate = epoch + pd.Timedelta(seconds = ti)
-        gdf['date'] = [str(currDate)]*len(lines)
+        
+        gdf['nTimeStep'] = [its]*len(lines)
+        gdf['date'] = [ti]*len(lines)
+        gdf['nHours'] = [(ti - t0).totalseconds()/3600]*len(lines)
     
     return gdf
 
@@ -178,8 +177,11 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     
     ## matplotlib triangulation
     tri = mpl.tri.Triangulation(x, y, nv)
+    
+    ## add max value over time and domain to the levels, just for polting porpuses.
     maxmax = np.max(ncObj[var])
-    levels = np.append(levels, [np.ceil(maxmax)])
+    if maxmax > levels[-1]:
+        levels = np.append(levels, [np.ceil(maxmax)])
     
     ## if subset not requested, array with all indices is used
     if indexSub == None:
@@ -472,11 +474,15 @@ def nc2xr(ncFile, var):
     '''
     with netcdf.Dataset(ncFile, 'r') as ncObj:
     
+        epoch = pd.to_datetime(ncObj['time'].units.split('since ')[1])
+        dates = [epoch + pd.Timedelta(seconds = x) for x in ncObj['time'][:]]
+    
         if checkTimeVarying(ncObj) == 1:
             dummy1 = ncObj[var][:,:].data
             nnodes = range(ncObj[var].shape[1])
             dims = ['time', 'node']
-            coords = {'time': ncObj['time'][:].data, 'node': nnodes}
+            # coords = {'time': ncObj['time'][:].data, 'node': nnodes}
+            coords = {'time': dates, 'node': nnodes}
         else:
             dummy1 = ncObj[var][:].data
             dummy1 = dummy1.reshape((1, len(dummy1)))
@@ -487,7 +493,7 @@ def nc2xr(ncFile, var):
         dummy2 = np.ma.masked_invalid(dummy1)
         dummy3 = dummy2.filled(fill_value = -99999.0)
         
-        epoch = pd.to_datetime(ncObj['time'].units.split('since ')[1])
+        epoch = 
         
         ds = xr.Dataset({
                         var:xr.DataArray(data = dummy3,
@@ -502,9 +508,181 @@ def nc2xr(ncFile, var):
                                          dims = ['node'],
                                          coords = {'node': nnodes})                                     
                         })
-
+        
+        ds[var].attrs['name'] = ncObj[var].long_name.capitalize()
         ds[var].attrs['units'] = ncObj[var].units
-        ds['time'].attrs['base_date'] = pd.to_datetime(ncObj['time'].units.split('since ')[1])
-        ds['time'].attrs['units'] = f'Seconds since {epoch}'
+        # ds['time'].attrs['base_date'] = pd.to_datetime(ncObj['time'].units.split('since ')[1])
+        # ds['time'].attrs['units'] = f'Seconds since {epoch}'
         
     return ds
+    
+#************************************************* GOOGLE EARTH ****************************************************
+
+def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.'):
+    ''' Create colorbar image to be imported in the kml file
+        Parameters
+            levels: np.array
+                contour levels
+            varName: string
+                name of the variable to export, just used for the legend.
+            units: string
+                units of the variable to export, just used for the legend.
+            cmap: string
+                colormap name
+        Return
+            None. The image will be dumped in the same path where the script is executed.
+                
+    '''
+    norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    cmap = mpl.cm.get_cmap(cmap)
+    fig, ax = plt.subplots(figsize=(1, 8))
+    cb = mpl.colorbar.ColorbarBase(ax, cmap = cmap, norm = norm, extend = 'neither',
+                                    extendfrac = 'auto', ticks = levels, spacing = 'uniform',
+                                    orientation = 'vertical')
+    cb.set_label(f'{varName} [{units}]')
+    fig.savefig(os.path.join(filePath, fileName), dpi = 300, bbox_inches = 'tight')
+    plt.close()
+    
+def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
+                        logoFile='logo.png', logoUnits='fraction', logoDims=None):
+    ''' Create screen overlay for the kml file with the colorbar and the project logo.
+        TODO: check logo chile path when calling the code from github repo
+        Parameters
+            kml: simplekml object.
+                output of lines2kml or poly2kml functions.
+            colorbar: bolean, default True.
+                True for including the colorbar.
+            logo: bolean, default True.
+                True for including the logo.
+            logoFile: string, default "logo.png"
+                name of the file to be included as logo
+            logoUnits: string, default fraction
+                the other available option is pixel.
+            logoDims: list, default None
+                x and y dimensions of the logo overlay
+        Returns
+            None    
+    '''
+    if colorbar == True:
+        screen1 = kml.newscreenoverlay(name='Colorbar')
+        screen1.icon.href = 'tempColorbar.jpg'
+        screen1.overlayxy = simplekml.OverlayXY(x= 0 , y = 0, xunits = simplekml.Units.fraction,
+                                         yunits = simplekml.Units.fraction)
+        screen1.screenxy = simplekml.ScreenXY(x = 0, y = 0.1, xunits = simplekml.Units.fraction,
+                                         yunits = simplekml.Units.fraction)
+        screen1.size.x = 0.08
+        screen1.size.y = 0.65
+        screen1.size.xunits = simplekml.Units.fraction
+        screen1.size.yunits = simplekml.Units.fraction
+    
+    if logo == True:
+        screen2 = kml.newscreenoverlay(name = 'logo')
+        screen2.icon.href = logoFile
+        screen2.overlayxy = simplekml.OverlayXY(x = 0, y = 1, xunits = simplekml.Units.fraction,
+                                       yunits = simplekml.Units.fraction)
+        screen2.screenxy = simplekml.ScreenXY(x = 0, y = 1, xunits = simplekml.Units.fraction,
+                                        yunits = simplekml.Units.fraction)
+        if logoUnits == 'fraction':     
+            screen2.size.xunits = simplekml.Units.fraction
+            screen2.size.yunits = simplekml.Units.fraction
+        elif logoUnits == 'pixel':
+            screen2.size.xunits = simplekml.Units.pixel
+            screen2.size.yunits = simplekml.Units.pixel
+        
+        if logoDims == None:
+            screen2.size.x = 0.85
+            screen2.size.y = 0.08
+        else:
+            screen2.size.x = logoDims[0]
+            screen2.size.y = logoDims[1]
+            
+def lines2kml(gdf, levels, cmap='viridis'):
+    ''' Write GeoDataFrame with shapely linestrings as kml
+        TODO: ADD SYS.EXIT IF GDF HAS A DATE COLUMN?
+        Parameters
+            gdf: GeoDataFrame
+                output of runExtractContours function
+            levels: np.array
+                contour levels
+            cmap: str, default "viridis"
+                colormap
+        Returns
+            kml: simplekml object
+    '''
+    norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    cmap = mpl.cm.get_cmap(cmap)
+    m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
+
+    kml = simplekml.Kml()
+    
+    for i in tqdm(gdf.index):
+        ls = kml.newlinestring(name = gdf.loc[i, 'labelCol'])
+        ls.coords = list(gdf.loc[i, 'geometry'].coords)
+        value = gdf.loc[i, 'value']
+        r, g, b, a = m.to_rgba(value)
+        ls.style.linestyle.color = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
+        ls.style.linestyle.width = 2
+        ls.description = gdf.loc[i, 'labelCol']
+    
+    return kml
+    
+def polys2kml(gdf, levels, cmap='viridis'):
+    ''' Write GeoDataFrame with shapely polygons as kml
+        TODO: ADD SYS.EXIT IF GDF HAS A DATE COLUMN?
+        Parameters
+            gdf: GeoDataFrame
+                output of runExtractContours function
+            levels: np.array
+                contour levels
+            cmap: str, default "viridis"
+                colormap
+        Returns
+            kml: simplekml object
+    '''
+    norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    cmap = mpl.cm.get_cmap('viridis')
+    m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
+
+    kml = simplekml.Kml()
+
+    for i in tqdm(gdf.index):
+        pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
+        pol.outerboundaryis = list(zip(gdf.loc[i, 'geometry'].exterior.coords.xy[0], 
+                                        gdf.loc[i, 'geometry'].exterior.coords.xy[1])) 
+
+        interiors = list(gdf.loc[i, 'geometry'].interiors)    
+        if len(interiors) > 0:
+            interiorsList = [list(interior.coords) for interior in interiors]
+            pol.innerboundaryis = interiorsList       
+
+        value = gdf.loc[i, 'avgVal']
+        r, g, b, a = m.to_rgba(value)
+        col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
+        pol.style.linestyle.color = col
+        pol.style.linestyle.width = 2
+        pol.description = gdf.loc[i, 'labelCol']
+#         pol.style.polystyle.color = col
+        pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
+
+    return kml
+    
+def nc2Kmz(gdf, levels, conType, pathout, ncObj, var, overlay=True, cmap='viridis'):
+    '''
+    '''
+    if conType == 'polygon':
+        kml = polys2kml(gdf, levels, cmap)
+    elif conType == 'polyline':
+        kml = lines2kml(gdf, levels, cmap)
+    else:
+        print('Only "polygon" o "polyline" formats are supported')
+        sys.exit(-1)
+    
+    if overlay == True:
+        name = ncObj[var].name
+        units = ncObj[var].units
+        createColorbar(levels, name, units)
+        kmlScreenOverlays(kml)
+        
+    kml.savekmz(pathout, format = False)
+    
+
