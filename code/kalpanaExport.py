@@ -1,5 +1,5 @@
 import fiona
-import xarray as xr
+# import xarray as xr
 import os
 import sys
 import matplotlib as mpl
@@ -17,7 +17,7 @@ import simplekml
 def contours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
         Parameters
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 adcirc input file
             var: string
                 name of the variable to export
@@ -27,9 +27,9 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
                 coordinate system
             its: int
                 timestep to be exported. If None (default) it is assumed that the file is not time-varying.
-            indexSux: np.array
-                array with indices of the nodes inside the requested subdomain.
-                Output of the ncSubset function. If None (default), all domain is exported.
+            subDom: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates
         Returns
             gdf: GeoDataFrame
                 Linestrings as geometry and contour value in the "value" column.
@@ -44,12 +44,12 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][0, :].to_masked_array()
+        aux = ncObj[var][:]#.to_masked_array()
 
     else:
-        aux = ncObj[var][its, :].to_masked_array()
+        aux = ncObj[var][its, :]#.to_masked_array()
         
-    contours = plt.tricontour(tri, aux, levels = levels)
+    contours = plt.tricontour(tri, aux.data, levels = levels)
     plt.close()
     
     ## iteration over lines
@@ -71,16 +71,21 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     gdf = gpd.GeoDataFrame(crs = f'EPSG:{epsg}', geometry = lines, index = range(len(lines)))
     gdf['value'] = values
     gdf['variable'] = [ncObj[var].name]*len(lines)
+    gdf['name'] = [ncObj[var].long_name.capitalize()]*len(lines)
     units = ncObj[var].units
     gdf['labelCol'] = [f'{x:0.2f} {units}' for x in values]
     
     if its != None:
-        t0 = ncObj['time'][0]
-        ti = ncObj['time'][its]
+        # t0 = ncObj['time'][0]
+        t0 = pd.to_datetime(ncObj['time'].units.split('since ')[1])
+        # ti = ncObj['time'][its]
+        ti = pd.Timedelta(seconds = int(ncObj['time'][its]))
         
         gdf['nTimeStep'] = [its]*len(lines)
-        gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(lines)
-        gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(lines)
+        # gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(lines)
+        gdf['date'] = [str(t0 + ti)]*len(lines)
+        # gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(lines)
+        gdf['nHours'] = [ti.total_seconds()/3600]*len(lines)
         
     if subDom is not None:
         subDom = readSubDomain(subDom, epsg)
@@ -149,7 +154,7 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     ''' Dataset to GeoDataFrame with filled contours as shapely polygons.
         TODO: WRITE THIS FX IN A MORE EASY-TO-READ WAY
         Parameters
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 Adcirc input file
             var: string
                 Name of the variable to export
@@ -159,9 +164,9 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
                 coordinate system            
             its: int
                 timestep to be exported. If None (default) it is assumed that the file is not time-varying.
-            indexSux: np.array
-                array with indices of the nodes inside the requested subdomain.
-                Output of the ncSubset function. If None (default), all domain is exported.
+            subDom: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates
         Returns
             gdf: GeoDataFrame
                 Polygons as geometry and contours min, average, max values as columns. 
@@ -182,13 +187,13 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][0, :].to_masked_array()
+        aux = ncObj[var][:]#.to_masked_array()
 
     else:
-        aux = ncObj[var][its, :].to_masked_array()
+        aux = ncObj[var][its, :]#.to_masked_array()
     
     # aux2 = np.copy(aux)
-    aux.data[np.isnan(aux.data)] = -99999.0
+    #aux.data[np.isnan(aux.data)] = -99999.0
     
     contoursf = plt.tricontourf(tri, aux.data, levels = levels)
     plt.close()  
@@ -250,16 +255,21 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     gdf['avgVal'] = data[3]
     # gdf['maxVal'] = data[2]
     gdf['variable'] = [ncObj[var].name]*len(data[3])
+    gdf['name'] = [ncObj[var].long_name]*len(data[3])
     units = ncObj[var].units
     gdf['labelCol'] = [f'{x:0.2f} {units}' for x in data[3]]
     
     if its != None:
-        t0 = ncObj['time'][0]
-        ti = ncObj['time'][its]
+        # t0 = ncObj['time'][0]
+        t0 = pd.to_datetime(ncObj['time'].units.split('since ')[1])
+        # ti = ncObj['time'][its]
+        ti = pd.Timedelta(seconds = int(ncObj['time'][its]))
         
         gdf['nTimeStep'] = [its]*len(data[3])
-        gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(data[3])
-        gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(data[3])
+        # gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(data[3])
+        gdf['date'] = [str(t0 + ti)]*len(data[3])
+        # gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(data[3])
+        gdf['nHours'] = [ti.total_seconds()/3600]*len(data[3])
         
     if subDom is not None:
         subDom = readSubDomain(subDom, epsg)
@@ -270,7 +280,7 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
 def checkTimeVarying(ncObj):
     ''' Check if an adcirc input is time-varying or not.
         Parameters
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 Adcirc input file
         Returns
             timeVar: int
@@ -291,17 +301,19 @@ def checkTimeVarying(ncObj):
 def runExtractContours(ncObj, var, levels, conType, epsg, subDom=None):
     ''' Run "contours2gpd" or "filledContours2gpd"
         Parameters
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 Adcirc input file
             var: string
                 Name of the variable to export
             levels: np.array
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
-            its: int
-                timestep to be exported. If None (default) it is assumed that the file is not time-varying.
-            indexSux: np.array
-                array with indices of the nodes inside the requested subdomain.
-                Output of the ncSubset function. If None (default), all domain is exported.
+            conType: string
+                'polyline' or 'polygon'
+            epsg: int
+                coordinate system
+            subDom: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates
         Returns
             gdf: GeoDataFrame
                 Polygons or polylines as geometry columns. If the requested file is time-varying the GeoDataFrame will include all timesteps.
@@ -336,7 +348,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg, subDom=None):
 def mesh2gdf(ncObj, epsg):
     ''' Write adcirc mesh as GeoDataFrame and extract centroid of each element. Used to create submesh
         Parameters:
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 adcirc file
             epsg: int
                 coordinate system
@@ -399,9 +411,9 @@ def readSubDomain(subDomain, epsg):
     return gdfSubDomain
     
 def ncSubset(ncObj, subDomain, epsg):
-    ''' Generate a subdomain of the original adcirc input mesh based on a user input.
+    ''' Generate a subdomain of the original adcirc input mesh based on a user input. NOT USED
         Parameters
-            ncObj: xarray dataset
+            ncObj: netCDF4._netCDF4.Dataset
                 adcirc input file
             subDomain: str or list
                 complete path of the subdomain polygon kml or shapelfile, or list with the
@@ -433,10 +445,10 @@ def ncSubset(ncObj, subDomain, epsg):
     return nodesInside, elemInside
     
 def meshSubset(ncObj, subDomain, epsg):
-    ''' Generate a subdomain of the original adcirc input mesh based on a subdomain
+    ''' Generate a subdomain of the original adcirc input mesh based on a subdomain. NOT USED
         Parameters
-            mesh: GeoDataFrame
-                output of the mesh2gdf function
+            ncObj: netCDF4._netCDF4.Dataset
+                adcirc output
             subDomain: str or list
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates
@@ -461,7 +473,7 @@ def meshSubset(ncObj, subDomain, epsg):
     return gdfMeshSubset
     
 def nc2xr(ncFile, var):
-    ''' Write netcdf as xarray dataset. May be redundant but I had some problems reading adcirc files with xarray.
+    ''' Write netcdf as xarray dataset. May be redundant but I had some problems reading adcirc files with xarray. NOT USED
         Xarray is faster and easier to work with than netCDF4 object.
         Parameters
             ncFile: string
@@ -515,9 +527,26 @@ def nc2xr(ncFile, var):
     return ds
     
 def nc2shp(ncFile, var, levels, conType, epsg, pathOut, subDomain=None, dateSubset=None):
+    ''' Run all necesary functions to export adcirc outputs as shapefiles.
+        Parameters
+            ncFile: string
+                path of the adcirc output, must be a netcdf file
+            var: string
+                Name of the variable to export
+            levels: np.array
+                Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
+            conType: string
+                'polyline' or 'polygon'
+            epsg: int
+                coordinate system
+            pathout: string
+                complete path of the output file (*.shp or *.gpkg)
+            subDomain: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates
     '''
-    '''
-    nc = nc2xr(ncFile, var)
+    # nc = nc2xr(ncFile, var)
+    nc = netcdf.Dataset(ncFile, 'r')
     levels = np.arange(levels[0], levels[1], levels[2])
     if subDomain == None:
         gdf = runExtractContours(nc, var, levels, conType, epsg)
@@ -582,7 +611,7 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
     '''
     if colorbar == True:
         screen1 = kml.newscreenoverlay(name='Colorbar')
-        screen1.icon.href = 'tempColorbar.jpg'
+        screen1.icon.href = colorbarFile
         screen1.overlayxy = simplekml.OverlayXY(x= 0 , y = 0, xunits = simplekml.Units.fraction,
                                          yunits = simplekml.Units.fraction)
         screen1.screenxy = simplekml.ScreenXY(x = 0, y = 0.1, xunits = simplekml.Units.fraction,
@@ -593,6 +622,12 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
         screen1.size.yunits = simplekml.Units.fraction
     
     if logo == True:
+        if logoFile == 'logo.png':
+            aux0 = __file__
+            aux1 = aux0.split('\\')
+            aux2 = '\\'.join(aux1[:-2])
+            logoFile = os.path.join(aux2, 'documentation', 'logo', logoFile)
+            
         screen2 = kml.newscreenoverlay(name = 'logo')
         screen2.icon.href = logoFile
         screen2.overlayxy = simplekml.OverlayXY(x = 0, y = 1, xunits = simplekml.Units.fraction,
@@ -714,10 +749,34 @@ def polys2kml(gdf, levels, cmap='viridis'):
 
     return kml
     
-def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, overlay=True, logoPath=None, subDomain=None, dateSubset=None, cmap='viridis'):
+def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
+            subDomain=None, dateSubset=None, cmap='viridis'):
+    ''' Run all necesary functions to export adcirc outputs as kmz.
+        Parameters
+            ncFile: string
+                path of the adcirc output, must be a netcdf file
+            var: string
+                Name of the variable to export
+            levels: np.array
+                Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
+            conType: string
+                'polyline' or 'polygon'
+            epsg: int
+                coordinate system
+            pathout: string
+                complete path of the output file (*.shp or *.gpkg)
+            overlay: boolean. Default True
+                If true overlay layer with logo and colorbar are added to the kmz file
+            logoFile: string
+                path of the logo image
+            subDomain: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates
+            cmap: string
+                name of the colormap
     '''
-    '''
-    nc = nc2xr(ncFile, var)
+    # nc = nc2xr(ncFile, var)
+    nc = netcdf.Dataset(ncFile, 'r')
     
     if checkTimeVarying(nc) == 1:
         print('Time-varying files can not be exported as kmz!')
@@ -742,8 +801,9 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, overlay=True, logoPath=N
         if overlay == True:
             name = nc[var].name
             units = nc[var].units
-            createColorbar(levels, name, units)
-            kmlScreenOverlays(kml, logoFile = logoPath)
+            createColorbar(levels, var, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
+            kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
+                        logoFile='logo.png', logoUnits='fraction', logoDims=None)
             
         kml.savekmz(pathOut, format = False)
         os.remove('tempColorbar.jpg')
