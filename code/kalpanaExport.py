@@ -5,16 +5,16 @@ import sys
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import datetime
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Polygon, LineString
+from shapely import ops
 from tqdm import tqdm
 import itertools
 import netCDF4 as netcdf
 import simplekml
 
-def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
+def contours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
         Parameters
             ncObj: xarray dataset
@@ -35,7 +35,6 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
                 Linestrings as geometry and contour value in the "value" column.
                 The name of the variable, the date and other info are also included in the columns
     '''
-    
     nv = ncObj['element'][:,:] - 1 ## triangles starts from 1
     x = ncObj['x'][:].data
     y = ncObj['y'][:].data
@@ -43,16 +42,12 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     ## matplotlib triangulation
     tri = mpl.tri.Triangulation(x, y, nv)
     
-    ## if subset not requested, array with all indices is used
-    if indexSub == None:
-        indexSub = range(ncObj[var].shape[1])
-    
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][0, indexSub].to_masked_array()
+        aux = ncObj[var][0, :].to_masked_array()
 
     else:
-        aux = ncObj[var][its, indexSub].to_masked_array()
+        aux = ncObj[var][its, :].to_masked_array()
         
     contours = plt.tricontour(tri, aux, levels = levels)
     plt.close()
@@ -69,9 +64,7 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
         vals.append(aux1)
     
     ## list of lists to one list
-    # lines = [x for y in geoms for x in y]
     lines = list(itertools.chain(*geoms))
-    # values = [x for y in vals for x in y]
     values = list(itertools.chain(*vals))
     
     ## define GeoDataFrame
@@ -82,12 +75,16 @@ def contours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     gdf['labelCol'] = [f'{x:0.2f} {units}' for x in values]
     
     if its != None:
-        t0 = int(ncObj['time'][0])
-        ti = int(ncObj['time'][its])
+        t0 = ncObj['time'][0]
+        ti = ncObj['time'][its]
         
         gdf['nTimeStep'] = [its]*len(lines)
-        gdf['date'] = [ti]*len(lines)
-        gdf['nHours'] = [(ti - t0).totalseconds()/3600]*len(lines)
+        gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(lines)
+        gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(lines)
+        
+    if subDom is not None:
+        subDom = readSubDomain(subDom, epsg)
+        gdf = gpd.clip(gdf, subDom)
     
     return gdf
 
@@ -148,7 +145,7 @@ def pointsInsidePoly(points, polygon):
     cont = p.contains_points(points)
     return cont
 
-def filledContours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
+def filledContours2gpd(ncObj, var, levels, epsg, its=None, subDom=None):
     ''' Dataset to GeoDataFrame with filled contours as shapely polygons.
         TODO: WRITE THIS FX IN A MORE EASY-TO-READ WAY
         Parameters
@@ -183,16 +180,12 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     if maxmax > levels[-1]:
         levels = np.append(levels, [np.ceil(maxmax)])
     
-    ## if subset not requested, array with all indices is used
-    if indexSub == None:
-        indexSub = range(ncObj[var].shape[1])
-    
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][0, indexSub].to_masked_array()
+        aux = ncObj[var][0, :].to_masked_array()
 
     else:
-        aux = ncObj[var][its, indexSub].to_masked_array()
+        aux = ncObj[var][its, :].to_masked_array()
     
     # aux2 = np.copy(aux)
     aux.data[np.isnan(aux.data)] = -99999.0
@@ -261,14 +254,16 @@ def filledContours2gpd(ncObj, var, levels, epsg, its=None, indexSub=None):
     gdf['labelCol'] = [f'{x:0.2f} {units}' for x in data[3]]
     
     if its != None:
-        gdf['nTimeStep'] = [its]*len(data[1])
-        t0 = int(ncObj['time'][0])
-        # epoch = pd.to_datetime(ncObj['time'].base_date)
-        epoch = ncObj['time'].base_date
-        ti = int(ncObj['time'][its])
-        gdf['nHours'] = [(ti - t0)/3600]*len(data[1])
-        currDate = epoch + pd.Timedelta(seconds = ti)
-        gdf['date'] = [str(currDate)]*len(data[1])
+        t0 = ncObj['time'][0]
+        ti = ncObj['time'][its]
+        
+        gdf['nTimeStep'] = [its]*len(data[3])
+        gdf['date'] = [str(ti.data).split('.')[0].replace('T', ' ')]*len(data[3])
+        gdf['nHours'] = [(ti.data - t0.data).item()/1e9]*len(data[3])
+        
+    if subDom is not None:
+        subDom = readSubDomain(subDom, epsg)
+        gdf = gpd.clip(gdf, subDom)
     
     return gdf
 
@@ -293,7 +288,7 @@ def checkTimeVarying(ncObj):
     
     return timeVar
 
-def runExtractContours(ncObj, var, levels, conType, epsg, indexSub=None):
+def runExtractContours(ncObj, var, levels, conType, epsg, subDom=None):
     ''' Run "contours2gpd" or "filledContours2gpd"
         Parameters
             ncObj: xarray dataset
@@ -315,9 +310,9 @@ def runExtractContours(ncObj, var, levels, conType, epsg, indexSub=None):
     timeVar = checkTimeVarying(ncObj)
     if timeVar == 0:
         if conType == 'polyline':
-            gdf = contours2gpd(ncObj, var, levels, epsg)
+            gdf = contours2gpd(ncObj, var, levels, epsg, subDom = subDom)
         elif conType == 'polygon':
-            gdf = filledContours2gpd(ncObj, var, levels, epsg)
+            gdf = filledContours2gpd(ncObj, var, levels, epsg, subDom = subDom)
         else:
             print('only "polyline" and "polygon" types are supported!')
             sys.exit(-1)
@@ -325,11 +320,11 @@ def runExtractContours(ncObj, var, levels, conType, epsg, indexSub=None):
         listGdf = []
         if conType == 'polyline':
             for t in tqdm(range(ncObj['time'].shape[0])):
-                aux = contours2gpd(ncObj, var, levels, epsg, its=t)
+                aux = contours2gpd(ncObj, var, levels, epsg, t, subDom)
                 listGdf.append(aux)
         elif conType == 'polygon':
             for t in tqdm(range(ncObj['time'].shape[0])):
-                aux = filledContours2gpd(ncObj, var, levels, epsg, its=t)
+                aux = filledContours2gpd(ncObj, var, levels, epsg, t, subDom)
                 listGdf.append(aux)
         else:
             print('only "polyline" and "polygon" types are supported!')
@@ -354,7 +349,7 @@ def mesh2gdf(ncObj, epsg):
     x = ncObj['x'][:].data
     y = ncObj['y'][:].data
     ## matplotlib triangulation
-    tri = matplotlib.tri.Triangulation(x, y, nv)
+    tri = mpl.tri.Triangulation(x, y, nv)
     xvertices = x[tri.triangles[:]]
     yvertices = y[tri.triangles[:]]
     listElem = np.stack((xvertices, yvertices), axis = 2)
@@ -403,21 +398,21 @@ def readSubDomain(subDomain, epsg):
     
     return gdfSubDomain
     
-def ncSubset(ncObj, var, subDomain, epsg):
+def ncSubset(ncObj, subDomain, epsg):
     ''' Generate a subdomain of the original adcirc input mesh based on a user input.
         Parameters
             ncObj: xarray dataset
                 adcirc input file
-            var: string
-                name of the variable to work with
             subDomain: str or list
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates
             epsg: int
                 epsg code of the used system of coordinates
         Returns
-            insideTrue: array
+            nodesInside: array
                 indices of the nodes within the requested subdomain.
+            elemInside: array
+                indices of the elements within the requested subdomain.
     '''
     subDomain = readSubDomain(subDomain, epsg)
     xAux, yAux = subDomain.geometry[0].exterior.coords.xy
@@ -428,9 +423,14 @@ def ncSubset(ncObj, var, subDomain, epsg):
     nodes = list(zip(x, y))
     
     inside = pointsInsidePoly(nodes, extCoords)
-    insideTrue = np.where(inside)[0]
+    nodesInside = np.where(inside)[0]
     
-    return insideTrue
+    mesh = mesh2gdf(ncObj, epsg)    
+    elemCent = list(zip(mesh.centX, mesh.centY))
+    boolInside = pointsInsidePoly(elemCent, extCoords)
+    elemInside = np.where(boolInside)[0]    
+    
+    return nodesInside, elemInside
     
 def meshSubset(ncObj, subDomain, epsg):
     ''' Generate a subdomain of the original adcirc input mesh based on a subdomain
@@ -447,7 +447,7 @@ def meshSubset(ncObj, subDomain, epsg):
                 GeoDataFrame with the mesh subset
     '''
     
-    mesh = mesh2gdfR1(ncObj, epsg)
+    mesh = mesh2gdf(ncObj, epsg)
     
     sub = readSubDomain(subDomain, epsg)
     xAux, yAux = sub.geometry[0].exterior.coords.xy
@@ -475,7 +475,7 @@ def nc2xr(ncFile, var):
     with netcdf.Dataset(ncFile, 'r') as ncObj:
     
         epoch = pd.to_datetime(ncObj['time'].units.split('since ')[1])
-        dates = [epoch + pd.Timedelta(seconds = x) for x in ncObj['time'][:]]
+        dates = [epoch + pd.Timedelta(seconds = float(x)) for x in ncObj['time'][:]]
     
         if checkTimeVarying(ncObj) == 1:
             dummy1 = ncObj[var][:,:].data
@@ -492,8 +492,6 @@ def nc2xr(ncFile, var):
         
         dummy2 = np.ma.masked_invalid(dummy1)
         dummy3 = dummy2.filled(fill_value = -99999.0)
-        
-        epoch = 
         
         ds = xr.Dataset({
                         var:xr.DataArray(data = dummy3,
@@ -516,7 +514,26 @@ def nc2xr(ncFile, var):
         
     return ds
     
-#************************************************* GOOGLE EARTH ****************************************************
+def nc2shp(ncFile, var, levels, conType, epsg, pathOut, subDomain=None, dateSubset=None):
+    '''
+    '''
+    nc = nc2xr(ncFile, var)
+    levels = np.arange(levels[0], levels[1], levels[2])
+    if subDomain == None:
+        gdf = runExtractContours(nc, var, levels, conType, epsg)
+    else:
+        # indexSub = ncSubset(nc, var, subDomain, epsg)
+        gdf = runExtractContours(nc, var, levels, conType, epsg, subDomain)
+    
+    
+    if pathOut.endswith('.shp'):
+        gdf.to_file(pathOut)
+    elif pathOut.endswith('.gpkg'):
+        gdf.to_file(pathOut, driver = 'GPKG')
+    
+    return gdf
+    
+####################################### GOOGLE EARTH ################################################
 
 def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.'):
     ''' Create colorbar image to be imported in the kml file
@@ -617,7 +634,15 @@ def lines2kml(gdf, levels, cmap='viridis'):
     
     for i in tqdm(gdf.index):
         ls = kml.newlinestring(name = gdf.loc[i, 'labelCol'])
-        ls.coords = list(gdf.loc[i, 'geometry'].coords)
+        try:
+            coords = list(gdf.loc[i, 'geometry'].coords)
+        except:
+            aux = []
+            for line in gdf.loc[i, 'geometry'].geoms:
+                aux.extend(list(line.coords))
+            # dummy = ops.linemerge(gdf.loc[i, 'geometry'])
+            coords = aux
+        ls.coords = coords
         value = gdf.loc[i, 'value']
         r, g, b, a = m.to_rgba(value)
         ls.style.linestyle.color = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
@@ -628,7 +653,6 @@ def lines2kml(gdf, levels, cmap='viridis'):
     
 def polys2kml(gdf, levels, cmap='viridis'):
     ''' Write GeoDataFrame with shapely polygons as kml
-        TODO: ADD SYS.EXIT IF GDF HAS A DATE COLUMN?
         Parameters
             gdf: GeoDataFrame
                 output of runExtractContours function
@@ -646,43 +670,81 @@ def polys2kml(gdf, levels, cmap='viridis'):
     kml = simplekml.Kml()
 
     for i in tqdm(gdf.index):
-        pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
-        pol.outerboundaryis = list(zip(gdf.loc[i, 'geometry'].exterior.coords.xy[0], 
-                                        gdf.loc[i, 'geometry'].exterior.coords.xy[1])) 
+        try:
+            outerCoords = list(zip(gdf.loc[i, 'geometry'].exterior.coords.xy[0], 
+                                        gdf.loc[i, 'geometry'].exterior.coords.xy[1]))
 
-        interiors = list(gdf.loc[i, 'geometry'].interiors)    
-        if len(interiors) > 0:
-            interiorsList = [list(interior.coords) for interior in interiors]
-            pol.innerboundaryis = interiorsList       
+            innerCoords = list(gdf.loc[i, 'geometry'].interiors)    
+            if len(innerCoords) > 0:
+                innerCoords = [list(interior.coords) for interior in innerCoords]
+            
+            pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
+            pol.outerboundaryis = outerCoords
+            pol.innerboundaryis = innerCoords
+            value = gdf.loc[i, 'avgVal']
+            r, g, b, a = m.to_rgba(value)
+            col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
+            pol.style.linestyle.color = col
+            pol.style.linestyle.width = 2
+            pol.description = gdf.loc[i, 'labelCol']
+    #         pol.style.polystyle.color = col
+            pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
+        
+        except:
+            for poly in gdf.loc[i, 'geometry'].geoms:
+                outerCoords = list(zip(poly.exterior.coords.xy[0], 
+                                        poly.exterior.coords.xy[1]))
 
-        value = gdf.loc[i, 'avgVal']
-        r, g, b, a = m.to_rgba(value)
-        col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
-        pol.style.linestyle.color = col
-        pol.style.linestyle.width = 2
-        pol.description = gdf.loc[i, 'labelCol']
-#         pol.style.polystyle.color = col
-        pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
+                innerCoords = list(poly.interiors)    
+                if len(innerCoords) > 0:
+                    innerCoords = [list(interior.coords) for interior in innerCoords]
+                
+                pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
+                pol.outerboundaryis = outerCoords
+                pol.innerboundaryis = innerCoords
+                value = gdf.loc[i, 'avgVal']
+                r, g, b, a = m.to_rgba(value)
+                col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
+                pol.style.linestyle.color = col
+                pol.style.linestyle.width = 2
+                pol.description = gdf.loc[i, 'labelCol']
+        #         pol.style.polystyle.color = col
+                pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
+
 
     return kml
     
-def nc2Kmz(gdf, levels, conType, pathout, ncObj, var, overlay=True, cmap='viridis'):
+def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, overlay=True, logoPath=None, subDomain=None, dateSubset=None, cmap='viridis'):
     '''
     '''
-    if conType == 'polygon':
-        kml = polys2kml(gdf, levels, cmap)
-    elif conType == 'polyline':
-        kml = lines2kml(gdf, levels, cmap)
-    else:
-        print('Only "polygon" o "polyline" formats are supported')
+    nc = nc2xr(ncFile, var)
+    
+    if checkTimeVarying(nc) == 1:
+        print('Time-varying files can not be exported as kmz!')
         sys.exit(-1)
-    
-    if overlay == True:
-        name = ncObj[var].name
-        units = ncObj[var].units
-        createColorbar(levels, name, units)
-        kmlScreenOverlays(kml)
+    else:
+        levels = np.arange(levels[0], levels[1], levels[2])
         
-    kml.savekmz(pathout, format = False)
-    
+        if subDomain == None:
+            gdf = runExtractContours(nc, var, levels, conType, epsg)
+        else:
+            # indexSub = ncSubset(nc, var, subDomain, epsg)
+            gdf = runExtractContours(nc, var, levels, conType, epsg, subDomain)   
+        
+        if conType == 'polygon':
+            kml = polys2kml(gdf, levels, cmap)
+        elif conType == 'polyline':
+            kml = lines2kml(gdf, levels, cmap)
+        else:
+            print('Only "polygon" o "polyline" formats are supported')
+            sys.exit(-1)
+        
+        if overlay == True:
+            name = nc[var].name
+            units = nc[var].units
+            createColorbar(levels, name, units)
+            kmlScreenOverlays(kml, logoFile = logoPath)
+            
+        kml.savekmz(pathOut, format = False)
+        os.remove('tempColorbar.jpg')
 
