@@ -799,9 +799,9 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, overlay=True, logoFile='
             sys.exit(-1)
         
         if overlay == True:
-            name = nc[var].name
+            name = nc[var].long_name.capitalize()
             units = nc[var].units
-            createColorbar(levels, var, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
+            createColorbar(levels, name, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
             kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
                         logoFile='logo.png', logoUnits='fraction', logoDims=None)
             
