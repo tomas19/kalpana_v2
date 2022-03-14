@@ -1,9 +1,10 @@
 import sys
-import numpy as np
+import time
 import warnings
 
 warnings.filterwarnings("ignore")
 
+now = time.time()
 inpf = sys.argv[1]
 
 with open(inpf, 'r') as inp:
@@ -41,4 +42,8 @@ elif pathOut.endswith('.shp') or pathOut.endswith('.gpkp'):
     else:
         gdf = nc2shp(ncFile, var, levels, conType, epsg, pathOut)
 
-print('Script finished succsesfully!')
+else:
+    print('Only ".kmz", ".shp" or ".gpkg" formats are suported!')
+    sys.exit(-1)
+
+print(f'Script finished succsesfully after: {(time.time() - now)/60:0.3f} min')
