@@ -42,4 +42,8 @@ elif pathOut.endswith('.shp') or pathOut.endswith('.gpkp'):
     else:
         gdf = nc2shp(ncFile, var, levels, conType, epsg, pathOut)
 
+else:
+    print('Only ".kmz", ".shp" or ".gpkg" formats are suported!')
+    sys.exit(-1)
+
 print(f'Script finished succsesfully after: {(time.time() - now)/60:0.3f} min')

@@ -667,7 +667,7 @@ def lines2kml(gdf, levels, cmap='viridis'):
 
     kml = simplekml.Kml()
     
-    for i in tqdm(gdf.index):
+    for i in gdf.index:
         ls = kml.newlinestring(name = gdf.loc[i, 'labelCol'])
         try:
             coords = list(gdf.loc[i, 'geometry'].coords)
@@ -704,7 +704,7 @@ def polys2kml(gdf, levels, cmap='viridis'):
 
     kml = simplekml.Kml()
 
-    for i in tqdm(gdf.index):
+    for i in gdf.index:
         try:
             outerCoords = list(zip(gdf.loc[i, 'geometry'].exterior.coords.xy[0], 
                                         gdf.loc[i, 'geometry'].exterior.coords.xy[1]))
