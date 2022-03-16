@@ -2,7 +2,8 @@
 # Inputs must be specified on the *LAST LINE* of the file delimited by space. The script has 7 required inputs and two optional.
 # This file must be in the same folder than the runKalpanaExport.py python script. DO NOT INCLUDE A LINE BELOW THE ARGUMENTS.
 #
-#Input1: Path of the github repository. If the path has any whitespace please use quation marks (""). If the "kalpanaExport.py" script is in the folder where the code #        is being executed, the path must be specified as "." instead (without the quation marks).
+#Input1: Path of the github repository. If the path has any whitespace please use quation marks (""). If the "kalpanaExport.py" script is in the folder where the code 
+#        is being executed, the path must be specified as "." instead (without the quation marks).
 #
 #Input2: Complete path of the adcirc output, must be a netcdf file (*.nc). If the path has any whitespace please use quation marks ("").
 #
@@ -17,7 +18,7 @@
 #Input7: Complete path of the output file. Only shapefile (*.shp), geopackage (*.gpkg) and kmz files are suported.
 #
 #Input8: Number of process, if more than 1 and a the input is time-varying filepython multiprocessing Pool class is used.
-#
+#         If you want to use all available processors, input npro equals to 999. 
 #Input9 Complete path of the subdomain polygon kml or shapelfile. Input can also be a list with the uper-left x, upper-left y, lower-right x and lower-right y
 #        coordinates. Values must be comma-delimited, do not use whitespaces in between. THIS INPUT IS OPTIONAL, if not specified the complete domain will be exported.
 ##########################################################################################################################################################################

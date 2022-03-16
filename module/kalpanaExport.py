@@ -768,7 +768,8 @@ def nc2shp(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
             npro: int
-                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool
+                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool.
+                For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates
@@ -996,6 +997,7 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
                 complete path of the output file (*.shp or *.gpkg)
             npro: int
                 number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool
+                For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates                

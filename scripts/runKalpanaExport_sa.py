@@ -29,6 +29,7 @@ epsg = 4326
 pathOut = r'C:\Users\tacuevas\NCSU\Research\kalpana\py3\multiprocessing\outputs\A.shp'
 
 # Number of process, if more than 1 and a the input is time-varying filepython multiprocessing Pool class is used.
+# If you want to use all available processors, input npro equals to 999. 
 npro = 1
 
 # Complete path of the subdomain polygon kml or shapelfile. Input can also be a list with the uper-left x, upper-left y, lower-right x and lower-right y
