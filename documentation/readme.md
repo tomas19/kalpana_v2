@@ -1,3 +1,3 @@
 imgs: images of the github repository
 
-logoKMZ: project logo used in the exported KMZ files
+logoForKMZ: project logo used in the exported KMZ files
