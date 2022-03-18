@@ -11,3 +11,8 @@ Instructions for set-up the python environment to work on Ubuntu 20.04
 2) Create a python virtual environment: python3 -m venv my_env_project
 3) Activate the environment: source/my_env_project/bin/activate
 4) pip install -r ubuntuReqs.txt
+
+Instructions for set-up the environment in Henry2
+1) Add python 3 to the PATH: module load conda
+2) Create an environment using kalpana_env_H2.yml: conda env create -f kalpana_env_H2.yml -p /path/to/the/environment
+* The environment can be to big to be instaled in the HOME directory, so specifying the path all packages will be instaled in a diferent place.
