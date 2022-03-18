@@ -1,0 +1,12 @@
+name: kalpana_env05
+channels:
+  - defaults
+dependencies:
+  - pip
+  - pip:
+    - matplotlib
+    - tqdm
+    - simplekml
+    - netCDF4
+    - geopandas
+    - rtree
