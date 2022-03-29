@@ -5,7 +5,6 @@ import sys
 
 def rastersToList(pathRasters, rasterFiles):
     ''' Create list with full path of rasters. 
-        Adapted by TAC Spring 2022, tacuevas@ncsu.edu
         Parameters
             pathRasters: str
                 path of the raster files. All must be in the same folder
@@ -55,7 +54,6 @@ def grassEnvVar(grassVer):
 
 def createGrassLoc(grassVer, locPath, createLocMethod='from_epsg', myepsg=4326, rasFile=None):
     ''' Create a Grass location for the downscaling methods. 
-        Adapted by TAC Spring 2022, tacuevas@ncsu.edu
         Parameters
             grassVer: float
                 Version of the grass software (The code was writen for v8.0).
@@ -98,7 +96,7 @@ def createGrassLoc(grassVer, locPath, createLocMethod='from_epsg', myepsg=4326, 
         print(f'"ERROR: Cannot create location {startCmd}', file = sys.stderror)
         sys.exit(-1)
     else:
-        print(f'Created location {locName}')
+        print(f'Created location {locPath}')
 
 def initGrass(locPath, mapset='PERMANENT'):
     ''' Set grass working environment
@@ -113,9 +111,8 @@ def initGrass(locPath, mapset='PERMANENT'):
     #### init grass environment
     gsetup.init(f'{locPath}\\{mapset}')
 
-def importRasters(rasFiles, rasterRes):
+def importRasters(rasFiles, rasterRes, pkg):
     ''' Import rasters using Grass gis.
-        Adapted by TAC Spring 2022, tacuevas@ncsu.edu
         Parameters
             rasFiles: list
                 list with complete path of each raster file
@@ -126,13 +123,14 @@ def importRasters(rasFiles, rasterRes):
             rasterOutList: list
                 list with imported raster files
     '''
+    #import grass.script as gs
     rasterOutList = []
     #### using first raster resolution
     if rasterRes == 'align':
         for ras in rasFiles:
             rasObj = os.path.basename(ras).split('.')[0]
             ### import
-            gs.run_command('r.import',
+            pkg.run_command('r.import',
                             overwrite=True,
                             input=ras,
                             output=rasObj)
@@ -141,7 +139,7 @@ def importRasters(rasFiles, rasterRes):
     elif type(rasterRes) == int:
         for ras in rasFiles:
             rasObj = os.path.basename(ras).split('.')[0]
-            gs.run_command('r.import',
+            pkg.run_command('r.import',
                             overwrite=True,
                             input=ras,
                             output=rasObj,
@@ -157,30 +155,37 @@ def importRasters(rasFiles, rasterRes):
         
     return rasterOutList
 
-def createGrassRegion(rasList):
+def createGrassRegion(rasList, pkg):
     ''' Create grass region based in input rasters
-        Adapted by TAC Spring 2022, tacuevas@ncsu.edu
         Parameters
             rasList: list
                 list of the raster objects imported
         Return
             None
     '''
+    #import grass.script as gs
     if len(rasList) > 1:
         ### set region
-        gs.run_command('g.region',
+        pkg.run_command('g.region',
                        raster=rasList)#,
     #                    quiet=True)
         ### patch rasters
-        gs.run_command('r.patch', 
+        pkg.run_command('r.patch', 
                         input=rasList,
                         output='dem',
                         overwrite=True,
                         quiet=True)
     else:
-        gs.run_command('g.region', 
-                       raster=dem, 
+        pkg.run_command('g.region', 
+                       raster=rasList, 
                        quiet=True)
+        #Set previous loop results to oldCostMap
+        pkg.run_command('g.rename', 
+                        raster=f'{rasList[0]},dem', 
+                        overwrite = True,
+                        quiet = True)
+                        
+                        
 
 def vertUnitConvert(conv):
     ''' Convert vertical units from meter 2 feet or feet 2 meter.
@@ -190,19 +195,20 @@ def vertUnitConvert(conv):
         Return
             None
     '''
-    grass.run_command('g.rename',raster="dem,demPreConv")
+    #import grass.script as gs
+    gs.run_command('g.rename',raster="dem,demPreConv")
     if conv == 'm2ft':
-        grass.mapcalc("$output=if(!isnull($demPreConv),$demPreConv*3.2808399,null())",
+        gs.mapcalc("$output=if(!isnull($demPreConv),$demPreConv*3.2808399,null())",
                         output="dem",
                         demPreConv="demPreConv@PERMANENT",
                         overwrite=True,
                         quiet=True)
     elif conv == 'ft2m':
-        grass.mapcalc("$output=if(!isnull($demPreConv),$demPreConv/3.2808399,null())",
+        gs.mapcalc("$output=if(!isnull($demPreConv),$demPreConv/3.2808399,null())",
                         output="dem",
                         demPreConv="demPreConv@PERMANENT",
                         overwrite=True,
                         quiet=True)
     else:
         sys.exit('Wrong argument. Available options are: m2ft or ft2m')
-    grass.run_command('g.remove',flags="f",type="all",name="demPreConv")        
+    gs.run_command('g.remove',flags="f",type="all",name="demPreConv")

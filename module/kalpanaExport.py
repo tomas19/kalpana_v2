@@ -856,7 +856,7 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
             aux0 = __file__
             aux1 = aux0.split('\\')
             aux2 = '\\'.join(aux1[:-2])
-            logoFile = os.path.join(aux2, 'documentation', 'logo', logoFile)
+            logoFile = os.path.join(aux2, 'documentation', 'logoForKmz', logoFile)
             
         screen2 = kml.newscreenoverlay(name = 'logo')
         screen2.icon.href = logoFile
