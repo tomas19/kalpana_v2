@@ -13,6 +13,7 @@ import itertools
 import netCDF4 as netcdf
 import simplekml
 from multiprocessing import Pool
+import xarray as xr
 
 def contours2gpd(ncObj, var, levels, epsg, its, subDom):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
@@ -44,12 +45,13 @@ def contours2gpd(ncObj, var, levels, epsg, its, subDom):
     
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][:]#.to_masked_array()
+        aux = ncObj[var][:].data#.to_masked_array()
 
     else:
-        aux = ncObj[var][its, :]#.to_masked_array()
-        
-    contours = plt.tricontour(tri, aux.data, levels = levels)
+        aux = ncObj[var][its, :].data#.to_masked_array()
+    
+    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)
+    contours = plt.tricontour(tri, aux, levels = levels)
     plt.close()
     
     ## iteration over lines
@@ -131,9 +133,10 @@ def contours2gpd_mp(data, x, y, nv, name, units, longName, epoch, times, levels,
     tri = mpl.tri.Triangulation(x, y, nv)
     
     ## get contourlines
-    aux = data[its, :]
+    aux = data[its, :].data
+    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)
         
-    contours = plt.tricontour(tri, aux.data, levels = levels)
+    contours = plt.tricontour(tri, aux, levels = levels)
     plt.close()
     
     ## iteration over lines
@@ -265,15 +268,16 @@ def filledContours2gpd(ncObj, var, levels, epsg, its, subDom):
     
     ## get contourlines
     if its == None: ## not time-varying file
-        aux = ncObj[var][:]#.to_masked_array()
+        aux = ncObj[var][:].data#.to_masked_array()
 
     else:
-        aux = ncObj[var][its, :]#.to_masked_array()
+        aux = ncObj[var][its, :].data#.to_masked_array()
     
+    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)
     # aux2 = np.copy(aux)
     #aux.data[np.isnan(aux.data)] = -99999.0
     
-    contoursf = plt.tricontourf(tri, aux.data, levels = levels)
+    contoursf = plt.tricontourf(tri, aux, levels = levels)
     plt.close()  
     
     geoms = []
@@ -397,9 +401,10 @@ def filledContours2gpd_mp(data, x, y, nv, name, units, longName, epoch, times, l
     if maxmax > levels[-1]:
         levels = np.append(levels, [np.ceil(maxmax)])
     
-    aux = data[its, :]
+    aux = data[its, :].data
+    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)
     
-    contoursf = plt.tricontourf(tri, aux.data, levels = levels)
+    contoursf = plt.tricontourf(tri, aux, levels = levels)
     plt.close()
     
     geoms = []
@@ -605,20 +610,20 @@ def readSubDomain(subDomain, epsg):
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates
             epsg: int
-                epsg code of the used system of coordinates       
+                epsg code of the used system of coordinates
         Returns
             gdfSubDomain: GeoDataFrame
                 user specified subdomain as geodataframe
     '''
     if type(subDomain) == str:
         ## kml or shp file
-        if subDomain.endswith('.shp'):
+        if subDomain.endswith('.shp') or subDomain.endswith('.gpkg'):
             gdfSubDomain = gpd.read_file(subDomain)
         elif subDomain.endswith('.kml'):
             gpd.io.file.fiona.drvsupport.supported_drivers['KML'] = 'rw'
             gdfSubDomain = gpd.read_file(subDomain, driver = 'KML')
         else:
-            print('Only shape and kml format are suported for sub domain generation!')
+            print('Only shape, geopackage and kml formats are suported for sub domain generation!')
             sys.exit(-1)
         xAux, yAux = gdfSubDomain.geometry[0].exterior.coords.xy
         extCoords = list(zip(xAux, yAux))
@@ -745,14 +750,14 @@ def nc2xr(ncFile, var):
                                          coords = {'node': nnodes})                                     
                         })
         
-        ds[var].attrs['name'] = ncObj[var].long_name.capitalize()
+        ds[var].attrs['long_name'] = ncObj[var].long_name.capitalize()
         ds[var].attrs['units'] = ncObj[var].units
         # ds['time'].attrs['base_date'] = pd.to_datetime(ncObj['time'].units.split('since ')[1])
         # ds['time'].attrs['units'] = f'Seconds since {epoch}'
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, dateSubset=None):
+def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, pathOut, npro=1, subDomain=None, dateSubset=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -763,8 +768,10 @@ def nc2shp(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
             conType: string
                 'polyline' or 'polygon'
-            epsg: int
-                coordinate system
+            epsgIn: int
+                coordinate system of the adcirc input
+            epsgOut: int
+                coordinate system of the output shapefile
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
             npro: int
@@ -772,13 +779,19 @@ def nc2shp(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
                 For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
+                adcirc input file.
     '''
     # nc = nc2xr(ncFile, var)
     nc = netcdf.Dataset(ncFile, 'r')
     levels = np.arange(levels[0], levels[1], levels[2])
 
-    gdf = runExtractContours(nc, var, levels, conType, epsg, subDomain, npro)
+    gdf = runExtractContours(nc, var, levels, conType, epsgIn, subDomain, npro)
+    
+    if epsgIn == epsgOut:
+        pass
+    else:
+        gdf = gdf.to_crs(epsgOut)
         
     if pathOut.endswith('.shp'):
         gdf.to_file(pathOut)
@@ -1000,7 +1013,8 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
                 For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates                
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates The crs must be the same of the
+                adcirc input file.
             overlay: boolean. Default True
                 If true overlay layer with logo and colorbar are added to the kmz file
             logoFile: string
