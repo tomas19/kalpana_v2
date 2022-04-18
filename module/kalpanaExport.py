@@ -13,7 +13,9 @@ import itertools
 import netCDF4 as netcdf
 import simplekml
 from multiprocessing import Pool
-import xarray as xr
+import warnings
+warnings.filterwarnings("ignore")
+#import xarray as xr
 
 def contours2gpd(ncObj, var, levels, epsg, its, subDom):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
