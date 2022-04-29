@@ -12,13 +12,127 @@ from tqdm import tqdm
 import itertools
 import netCDF4 as netcdf
 import simplekml
-#from multiprocessing import Pool
-#import xarray as xr
 import warnings
 warnings.filterwarnings("ignore")
 import time
 import dask
 from tqdm.dask import TqdmCallback
+from vyperdatum.points import VyperPoints
+from scipy.spatial import KDTree
+
+def gdfChangeVerUnit(gdf, ini, out):
+    ''' Change vertical units of the columns of a GeoDataFrame which
+        contains "z" on the name
+        Parameters
+            gdf: GeoDataFrame
+                out of the runExtractContours function
+            ini: string
+                initial unit eg: 'm' or 'ft'
+            out: string
+                final unit eg: 'm' or 'ft'
+        Returns
+            gdf2: GeoDataFrame
+                updated geodataframe with the new unit added on the name 
+                to the columns with "z" in it.
+    '''
+    gdf2 = gdf.copy()
+    colsIni = [x if 'z' not in x else f'{x}_{ini}' for x in gdf2.columns]
+    gdf2.columns = colsIni
+    
+    cols = [x for x in gdf2.columns if 'z' in x]
+    if ini == 'm' and out == 'ft':
+        for col in cols:
+            # colnew = col.replace(ini, out)
+            # gdf2[colnew] = gdf2[col] * 3.2808399
+            gdf2[col] = gdf2[col] * 3.2808399
+    elif ini == 'ft' and out == 'm':
+        for col in cols:
+            # colnew = col.replace(ini, out)
+            # gdf2[colnew] = gdf2[col] / 3.2808399
+            gdf2[col] = gdf2[col] / 3.2808399
+            
+    return gdf2
+
+def dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut):
+    ''' Get the vertical difference of two datums on a group of locations
+        Parameters
+            vdatum_directory: string
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
+            x, y: numpy array
+                x and y-coordinate of the group of points
+            epsg: int
+                coordinate system code of the data. eg: 4326 for wgs84 (lat/lon)
+            vdatumIn, vdatumOut: string
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
+        Returns
+            df: dataframe
+                dataframe with the coordinates of the requested points. The dz0 column is the raw
+                datum difference from vdatum, but it can also output NaN values. In this case the difference
+                of the closest valid point is assigned used the scipy KDTree algorithm.
+                
+    '''
+    vp = VyperPoints(vdatum_directory = vdatum_directory)
+    z = np.zeros(len(x))
+    vp = VyperPoints(silent = True)
+    vp.transform_points((epsg, vdatumIn), (epsg, vdatumOut), x, y, z = z)
+    df = pd.DataFrame({'x': x, 'y': y, 'dz0': vp.z})
+    indexVal = np.where(~np.isnan(df['dz0'].values))[0]
+    indexNan = np.where(np.isnan(df['dz0'].values))[0]
+    tree = KDTree(list(zip(df.loc[indexVal, 'x'], df.loc[indexVal, 'y'])))
+    query = tree.query(list(zip(df.loc[indexNan, 'x'], df.loc[indexNan, 'y'])))
+    aux0 = df.loc[indexVal, 'dz0']
+    aux1 = aux0.values[query[1]]
+    df['dz1'] = [np.nan]*len(df)
+    df.loc[indexNan, 'dz1'] = aux1
+    df['dz'] = df['dz0'].fillna(0) + df['dz1'].fillna(0)
+    
+    return df
+    
+def gdfChangeVertDatum(vdatum_directory, gdf, vdatumIn = 'tss', vdatumOut = 'navd88'):
+        ''' Change the vertical datum of the columns of a GeoDataFrame which
+            contains "z" on the name
+            Parameters
+                vdatum_directory: string
+                    full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
+            gdf: GeoDataFrame
+                out of the runExtractContours function
+            vdatumIn, vdatumOut: string. Default 'tss' and 'navd88'
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
+            gdf2: GeoDataFrame
+                updated geodataframe with the new datum added on the name 
+                to the columns with "z" on it.
+        '''
+        ## get points
+        gdf2 = gdf.copy()
+        dummyList = [list(gdf2['geometry'][x].centroid.coords)[0] for x in gdf2.index]
+        aux = list(zip(*dummyList))
+        x = np.array(aux[0])
+        y = np.array(aux[1])
+        z = np.zeros(len(x))
+        epsg = int(gdf2.crs.to_string().split(':')[1])
+        
+        # gdf2['xPolyCentroid'] = x
+        # gdf2['yPolyCentroid'] = y
+        
+        ## use vyperdatum to get difference betweem vdatumIn and vdatumOut
+        ## dz in m
+        df = dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut)
+        
+        newCols = [x if 'z' not in x else f'{x}_{vdatumIn}' for x in gdf2.columns]
+        gdf2.columns = newCols
+        aux = [x for x in gdf2.columns if vdatumIn in x]
+        for col in aux:
+            # newcol = col.replace(vdatumIn, vdatumOut)
+            # gdf2[newcol] = gdf2[col] + df.dz
+            gdf2[col] = gdf2[col] + df.dz
+        
+        return gdf2
 
 def classifyPolygons(polys):
     ''' Classify polygons based on signed area to get inner and outer polygons.
@@ -92,21 +206,16 @@ def checkTimeVarying(ncObj):
 
 def filledContours2gpd(tri, data, levels, epsg):
     ''' Dataset to GeoDataFrame with filled contours as shapely polygons.
-        TODO: WRITE THIS FX IN A MORE EASY-TO-READ WAY
+        A dask delayed python decorator is used to handle the code's parallelization.
         Parameters
-            ncObj: netCDF4._netCDF4.Dataset
-                Adcirc input file
-            var: string
-                Name of the variable to export
+            tri: mpl.tri.Triangulation
+                triangulation of the adcirc mesh
+            data: numpy array
+                1D array with the data of the adcirc output variable
             levels: np.array
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
             epsg: int
-                coordinate system            
-            its: int
-                timestep to be exported. If None (default) it is assumed that the file is not time-varying.
-            subDom: str or list. Default None
-                complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates
+                coordinate system
         Returns
             gdf: GeoDataFrame
                 Polygons as geometry and contours min, average, max values as columns. 
@@ -171,34 +280,32 @@ def filledContours2gpd(tri, data, levels, epsg):
     
     tasks = [getGeom(icoll, coll) for icoll, coll in enumerate(contoursf.collections)]
     with TqdmCallback(desc = "Compute contours using Dask"):
-        daskGeoms = dask.compute(tasks, scheduler = 'threads')    
+        daskGeoms = dask.compute(tasks, scheduler = 'threads')
     
     geoms = list(itertools.chain(*daskGeoms[0]))
     
     ## define geopandas
     data = list(zip(*geoms))
-    gdf = gpd.GeoDataFrame(crs = f'EPSG:{epsg}', geometry = list(data[0]), 
+    gdf = gpd.GeoDataFrame(crs = epsg, geometry = list(data[0]), 
                            index = range(len(data[0])))
-    gdf['value'] = data[3]
+    gdf['zMin'] = data[1]
+    gdf['zMean'] = data[3]
+    gdf['zMax'] = data[2]
     
     return gdf
 
 def contours2gpd(tri, data, levels, epsg):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
+        A dask delayed python decorator is used to handle the code's parallelization.
         Parameters
-            ncObj: netCDF4._netCDF4.Dataset
-                adcirc input file
-            var: string
-                name of the variable to export
+            tri: mpl.tri.Triangulation
+                triangulation of the adcirc mesh
+            data: numpy array
+                1D array with the data of the adcirc output variable
             levels: np.array
-                contour levels
+                Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
             epsg: int
                 coordinate system
-            its: int
-                timestep to be exported. If None it is assumed that the file is not time-varying.
-            subDom: str or list.
-                complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates
         Returns
             gdf: GeoDataFrame
                 Linestrings as geometry and contour value in the "value" column.
@@ -231,10 +338,10 @@ def contours2gpd(tri, data, levels, epsg):
     
     ## define geopandas
     data = list(zip(*geoms))
-    gdf = gpd.GeoDataFrame(crs = f'EPSG:{epsg}', geometry = list(data[0]), 
+    gdf = gpd.GeoDataFrame(crs = epsg, geometry = list(data[0]), 
                            index = range(len(data[0])))
-    # gdf['minVal'] = data[1]
-    gdf['value'] = data[1]
+   
+    gdf['z'] = data[1]
     
     return gdf
 
@@ -251,11 +358,6 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
                 'polyline' or 'polygon'
             epsg: int
                 coordinate system
-            subDom: str or list. Default None
-                complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates
-            npro: int
-                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool
         Returns
             gdf: GeoDataFrame
                 Polygons or polylines as geometry columns. If the requested file is time-varying the GeoDataFrame will include all timesteps.
@@ -280,9 +382,11 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
         
         if conType == 'polyline':
+            labelCol = 'z'
             gdf = contours2gpd(tri, aux, levels, epsg)
         
         elif conType == 'polygon':
+            labelCol = 'zMean'
             ## add max value over time and domain to the levels, just for polting porpuses.
             maxmax = np.max(ncObj[var])
             if maxmax > levels[-1]:
@@ -296,13 +400,13 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             
         gdf['variable'] = [vname]*len(gdf)
         gdf['name'] = [lname]*len(gdf)
-        gdf['labelCol'] = [f'{x:0.2f} {u}' for x in gdf['value']]
+        gdf['labelCol'] = [f'{x:0.2f} {u}' for x in gdf[labelCol]]
             
     else:
         t0 = pd.to_datetime(ncObj['time'].units.split('since ')[1])
         listGdf = []
         if conType == 'polyline':
-            
+            labelCol = 'z'
             for t in tqdm(range(ncObj['time'].shape[0])):
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
@@ -315,7 +419,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
                 listGdf.append(gdfi)
         
         elif conType == 'polygon':
-            
+            labelCol = 'zMean'
             for t in tqdm(range(ncObj['time'].shape[0])):
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
@@ -333,7 +437,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         gdf = gpd.GeoDataFrame(pd.concat(listGdf, axis=0, ignore_index=True), crs=epsg)
         gdf['variable'] = [vname]*len(gdf)
         gdf['name'] = [lname]*len(gdf)
-        gdf['labelCol'] = [f'{x:0.2f} {u}' for x in gdf['value']]
+        gdf['labelCol'] = [f'{x:0.2f} {u}' for x in gdf[labelCol]]
         
     return gdf
 
@@ -521,7 +625,8 @@ def nc2xr(ncFile, var):
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, pathOut, subDomain=None, dateSubset=None):
+def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, vDatumPath,
+           subDomain=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -536,20 +641,37 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, pathOut, subDomain=Non
                 coordinate system of the adcirc input
             epsgOut: int
                 coordinate system of the output shapefile
+            vUnitIn, vUnitOut: string
+                input and output vertical units. For the momment only supported 'm' and 'ft'
+            vdatumIn, vdatumOut: string
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
-            npro: int
-                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool.
-                For using all available processors, input 999.
+            vdatum_directory: string
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
                 adcirc input file.
     '''
+    
     nc = netcdf.Dataset(ncFile, 'r')
     levels = np.arange(levels[0], levels[1], levels[2])
 
     gdf = runExtractContours(nc, var, levels, conType, epsgIn)
+
+    if vDatumIn == vDatumOut:
+        pass
+    else:
+        gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
+    
+    if vUnitIn == vUnitOut:
+        pass
+    else:
+        gdf = gdfChangeVerUnit(gdf, vUnitIn, vUnitOut)
     
     if epsgIn == epsgOut:
         pass
@@ -759,7 +881,7 @@ def polys2kml(gdf, levels, cmap='viridis'):
     return kml
     
 def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
-            dateSubset=None, cmap='viridis'):
+           cmap='viridis'):
     ''' Run all necesary functions to export adcirc outputs as kmz.
         Parameters
             ncFile: string
