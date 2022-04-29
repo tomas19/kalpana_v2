@@ -462,7 +462,7 @@ def mesh2gdf(ncObj, epsg):
     yvertices = y[tri.triangles[:]]
     listElem = np.stack((xvertices, yvertices), axis = 2)
     pols = [Polygon(x) for x in listElem]
-    gdf = gpd.GeoDataFrame(geometry = pols, crs = f'EPSG:{epsg}')
+    gdf = gpd.GeoDataFrame(geometry = pols, crs = epsg)
     gdf['centX'] = xvertices.mean(axis = 1)
     gdf['centY'] = yvertices.mean(axis = 1)
     gdf['v1'] = nv.data[:, 0]
@@ -501,7 +501,7 @@ def readSubDomain(subDomain, epsg):
         ulLon, ulLat, lrLon, lrLat = subDomain
         extCoords = [(ulLon, ulLat), (ulLon, lrLat), (lrLon, lrLat), (lrLon, ulLat), (ulLon, ulLat)]
         poly = Polygon(extCoords)
-        gdfSubDomain = gpd.GeoDataFrame(geometry = [poly], crs = f'EPSG:{epsg}')
+        gdfSubDomain = gpd.GeoDataFrame(geometry = [poly], crs = epsg)
     else:
         print('subDomain must be the path of a kml or shapefile, or a list with the coordinates of ' \
               'the upper left and lower right corners of a box')
@@ -662,6 +662,10 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
     levels = np.arange(levels[0], levels[1], levels[2])
 
     gdf = runExtractContours(nc, var, levels, conType, epsgIn)
+    
+    if subDomain is not None:
+        subDom = readSubDomain(subDomain, epsgIn)
+        gdf = gpd.clip(gdf, subDom)
 
     if vDatumIn == vDatumOut:
         pass
@@ -809,7 +813,7 @@ def lines2kml(gdf, levels, cmap='viridis'):
             # dummy = ops.linemerge(gdf.loc[i, 'geometry'])
             coords = aux
         ls.coords = coords
-        value = gdf.loc[i, 'value']
+        value = gdf.loc[i, 'z']
         r, g, b, a = m.to_rgba(value)
         ls.style.linestyle.color = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
         ls.style.linestyle.width = 2
@@ -847,7 +851,7 @@ def polys2kml(gdf, levels, cmap='viridis'):
             pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
             pol.outerboundaryis = outerCoords
             pol.innerboundaryis = innerCoords
-            value = gdf.loc[i, 'avgVal']
+            value = gdf.loc[i, 'zMean']
             r, g, b, a = m.to_rgba(value)
             col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
             pol.style.linestyle.color = col
@@ -868,7 +872,7 @@ def polys2kml(gdf, levels, cmap='viridis'):
                 pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
                 pol.outerboundaryis = outerCoords
                 pol.innerboundaryis = innerCoords
-                value = gdf.loc[i, 'avgVal']
+                value = gdf.loc[i, 'zMean']
                 r, g, b, a = m.to_rgba(value)
                 col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
                 pol.style.linestyle.color = col
@@ -880,7 +884,7 @@ def polys2kml(gdf, levels, cmap='viridis'):
 
     return kml
     
-def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
+def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
            cmap='viridis'):
     ''' Run all necesary functions to export adcirc outputs as kmz.
         Parameters
@@ -896,9 +900,6 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
                 coordinate system
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
-            npro: int
-                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool
-                For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates The crs must be the same of the
@@ -921,7 +922,11 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
     else:
         levels = np.arange(levels[0], levels[1], levels[2])
         
-        gdf = runExtractContours(nc, var, levels, conType, epsg, subDomain, npro)
+        gdf = runExtractContours(nc, var, levels, conType, epsg)
+        
+        if subDomain is not None:
+            subDom = readSubDomain(subDomain, epsg)
+            gdf = gpd.clip(gdf, subDom)
         
         if conType == 'polygon':
             kml = polys2kml(gdf, levels, cmap)
@@ -940,4 +945,6 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, npro=1, subDomain=None, 
             
         kml.savekmz(pathOut, format = False)
         os.remove('tempColorbar.jpg')
+        
+        return gdf
 
