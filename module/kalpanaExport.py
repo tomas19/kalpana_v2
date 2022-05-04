@@ -36,9 +36,10 @@ def gdfChangeVerUnit(gdf, ini, out):
                 to the columns with "z" in it.
     '''
     gdf2 = gdf.copy()
-    colsIni = [x if 'z' not in x else f'{x}_{ini}' for x in gdf2.columns]
-    gdf2.columns = colsIni
+    # colsIni = [x if 'z' not in x else f'{x}_{ini}' for x in gdf2.columns]
+    # gdf2.columns = colsIni
     
+    # cols = [x for x in gdf2.columns if 'z' in x]
     cols = [x for x in gdf2.columns if 'z' in x]
     if ini == 'm' and out == 'ft':
         for col in cols:
@@ -124,9 +125,10 @@ def gdfChangeVertDatum(vdatum_directory, gdf, vdatumIn = 'tss', vdatumOut = 'nav
         ## dz in m
         df = dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut)
         
-        newCols = [x if 'z' not in x else f'{x}_{vdatumIn}' for x in gdf2.columns]
-        gdf2.columns = newCols
-        aux = [x for x in gdf2.columns if vdatumIn in x]
+        # newCols = [x if 'z' not in x else f'{x}_{vdatumIn}' for x in gdf2.columns]
+        # gdf2.columns = newCols
+        # aux = [x for x in gdf2.columns if vdatumIn in x]
+        aux = [x for x in gdf2.columns if 'z' in x]
         for col in aux:
             # newcol = col.replace(vdatumIn, vdatumOut)
             # gdf2[newcol] = gdf2[col] + df.dz
@@ -625,8 +627,8 @@ def nc2xr(ncFile, var):
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, vDatumPath,
-           subDomain=None):
+def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
+            vDatumPath = None, subDomain=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -650,8 +652,9 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 list(datum_definition.keys())
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
-            vdatum_directory: string
-                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
+            vDatumPath: string. Default None
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
+                vDatumIn and vDatumOut are different
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
