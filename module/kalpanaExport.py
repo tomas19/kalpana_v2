@@ -881,11 +881,82 @@ def polys2kml(gdf, levels, cmap='viridis'):
         #         pol.style.polystyle.color = col
                 pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
 
-
     return kml
+
+def countVertices(gdf):
+    ''' Count vertices of the polygons of a GeoDataFrame.
+        Parameters:
+            gdf: GeoDataFrame
+                output of runExtractContours function
+        Returns:
+            nVertices: list
+                number of vertices of each polygon
+    '''
+    nVertices = []
+    for ix, x in enumerate(gdf.geometry):
+        poly = x
+        a = 0
+        try:
+            a = a + len(list(x.exterior.coords))
+        except:
+            for pol in poly:
+                a = a + len(list(pol.exterior.coords))
+        nVertices.append(a)
+        
+        return nVertices
+
+def katana(geometry, threshold, count=0):
+    ''' Split a Polygon into two or more parts across it's shortest dimension
+        function taken from: 
+        https://snorfalorpagus.net/blog/2016/03/13/splitting-large-polygons-for-faster-intersections
+        Parameters:
+            geometry: shapely polygon
+                polygon to devide
+            threshold: float
+                maximum area of the subpolygons
+            count: int
+                number of subareas. Default 0.
+        Returns
+            final_result: list
+                list with new polygons
+    '''
+    bounds = geometry.bounds
+    width = bounds[2] - bounds[0]
+    height = bounds[3] - bounds[1]
+    if max(width, height) <= threshold or count == 250:
+        # either the polygon is smaller than the threshold, or the maximum
+        # number of recursions has been reached
+        return [geometry]
+    if height >= width:
+        # split left to right
+        a = box(bounds[0], bounds[1], bounds[2], bounds[1]+height/2)
+        b = box(bounds[0], bounds[1]+height/2, bounds[2], bounds[3])
+    else:
+        # split top to bottom
+        a = box(bounds[0], bounds[1], bounds[0]+width/2, bounds[3])
+        b = box(bounds[0]+width/2, bounds[1], bounds[2], bounds[3])
+    result = []
+    for d in (a, b,):
+        c = geometry.intersection(d)
+        if not isinstance(c, GeometryCollection):
+            c = [c]
+        for e in c:
+            if isinstance(e, (Polygon, MultiPolygon)):
+                result.extend(katana(e, threshold, count+1))
+    if count > 0:
+        return result
+    # convert multipart into singlepart
+    final_result = []
+    for g in result:
+        if isinstance(g, MultiPolygon):
+            final_result.extend(g)
+        else:
+            final_result.append(g)
+    
+    return final_result
     
 def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
-           cmap='viridis'):
+           cmap='viridis', thresVertices=20_000):
     ''' Run all necesary functions to export adcirc outputs as kmz.
         Parameters
             ncFile: string
@@ -906,12 +977,15 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=T
                 adcirc input file.
             overlay: boolean. Default True
                 If true overlay layer with logo and colorbar are added to the kmz file
-            logoFile: string
+            logoFile: string. Default 'logo.png'
                 path of the logo image
-            colorbarFile: string
+            colorbarFile: string. Default 'tempColorbar.jpg'
                 name of the colorbar img
-            cmap: string
+            cmap: string. Default 'viridis'
                 name of the colormap
+            thresVertices: int
+                maximum number of vertices allowed per polygon. If a polygon has more vertices, the
+                katana function will be used.
     '''
     # nc = nc2xr(ncFile, var)
     nc = netcdf.Dataset(ncFile, 'r')
@@ -924,27 +998,27 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=T
         
         gdf = runExtractContours(nc, var, levels, conType, epsg)
         
-        if subDomain is not None:
-            subDom = readSubDomain(subDomain, epsg)
-            gdf = gpd.clip(gdf, subDom)
+        # if subDomain is not None:
+            # subDom = readSubDomain(subDomain, epsg)
+            # gdf = gpd.clip(gdf, subDom)
         
-        if conType == 'polygon':
-            kml = polys2kml(gdf, levels, cmap)
-        elif conType == 'polyline':
-            kml = lines2kml(gdf, levels, cmap)
-        else:
-            print('Only "polygon" o "polyline" formats are supported')
-            sys.exit(-1)
+        # if conType == 'polygon':
+            # kml = polys2kml(gdf, levels, cmap)
+        # elif conType == 'polyline':
+            # kml = lines2kml(gdf, levels, cmap)
+        # else:
+            # print('Only "polygon" o "polyline" formats are supported')
+            # sys.exit(-1)
         
-        if overlay == True:
-            name = nc[var].long_name.capitalize()
-            units = nc[var].units
-            createColorbar(levels, name, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
-            kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
-                        logoFile='logo.png', logoUnits='fraction', logoDims=None)
+        # if overlay == True:
+            # name = nc[var].long_name.capitalize()
+            # units = nc[var].units
+            # createColorbar(levels, name, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
+            # kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
+                        # logoFile='logo.png', logoUnits='fraction', logoDims=None)
             
-        kml.savekmz(pathOut, format = False)
-        os.remove('tempColorbar.jpg')
+        # kml.savekmz(pathOut, format = False)
+        # os.remove('tempColorbar.jpg')
         
         return gdf
 
