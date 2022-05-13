@@ -1,13 +1,14 @@
 import fiona
 import os
 import sys
+import cmocean
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Polygon, LineString
-from shapely import ops
+from shapely.ops import split
 from tqdm import tqdm
 import itertools
 import netCDF4 as netcdf
@@ -16,6 +17,7 @@ import warnings
 warnings.filterwarnings("ignore")
 import time
 import dask
+import dask.array as da
 from tqdm.dask import TqdmCallback
 from vyperdatum.points import VyperPoints
 from scipy.spatial import KDTree
@@ -376,10 +378,15 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
     tri = mpl.tri.Triangulation(x, y, nv)
     
     timeVar = checkTimeVarying(ncObj)
+    if var == 'depth':
+        timeVar = 0
+        auxMult = -1
+    else:
+        auxMult = 1
     
     if timeVar == 0:
         aux = ncObj[var][:].data
-        aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
+        aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
         
         if conType == 'polyline':
             labelCol = 'z'
@@ -509,67 +516,67 @@ def readSubDomain(subDomain, epsg):
     
     return gdfSubDomain
     
-def ncSubset(ncObj, subDomain, epsg):
-    ''' Generate a subdomain of the original adcirc input mesh based on a user input. NOT USED
+def daNcSubset(ncObj, epsg, subDom):
+    ''' Extract subset of netCDF file using a GeoDataFrame as subdomain
         Parameters
             ncObj: netCDF4._netCDF4.Dataset
-                adcirc input file
-            subDomain: str or list
+                Adcirc input file
+            epsg: int
+                coordinate system
+            subDom: str or list
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates
-            epsg: int
-                epsg code of the used system of coordinates
         Returns
+            mind: dask.array.core.Array
+                matrix with triangles
             nodesInside: array
-                indices of the nodes within the requested subdomain.
-            elemInside: array
-                indices of the elements within the requested subdomain.
+                index of the ncObj nodes inside subDom
     '''
-    subDomain = readSubDomain(subDomain, epsg)
+    ## read subdomain
+    subDomain = readSubDomain(subDom, epsg)
+    ## read mesh as GeoDataFrame
+    mesh = mesh2gdf(ncObj, epsg)
+    ## exterior coordinates of the subdomain polygon
     xAux, yAux = subDomain.geometry[0].exterior.coords.xy
     extCoords = list(zip(xAux, yAux))
+    ## centroid of each mesh triangle
+    centroids = list(zip(mesh.centX, mesh.centY))
+    ## find centroids inside subdomain
+    inside = pointsInsidePoly(centroids, extCoords)
+    centInside = np.where(inside)[0]
     
-    x = ncObj['x'][:].data
-    y = ncObj['y'][:].data
-    nodes = list(zip(x, y))
-    
-    inside = pointsInsidePoly(nodes, extCoords)
-    nodesInside = np.where(inside)[0]
-    
-    mesh = mesh2gdf(ncObj, epsg)    
-    elemCent = list(zip(mesh.centX, mesh.centY))
-    boolInside = pointsInsidePoly(elemCent, extCoords)
-    elemInside = np.where(boolInside)[0]    
-    
-    return nodesInside, elemInside
-    
-def meshSubset(ncObj, subDomain, epsg):
-    ''' Generate a subdomain of the original adcirc input mesh based on a subdomain. NOT USED
-        Parameters
-            ncObj: netCDF4._netCDF4.Dataset
-                adcirc output
-            subDomain: str or list
-                complete path of the subdomain polygon kml or shapelfile, or list with the
-                uper-left x, upper-left y, lower-right x and lower-right y coordinates
-            epsg: int
-                epsg code of the used system of coordinates
-        Returns
-            gdfMeshSubset: GeoDataFrame
-                GeoDataFrame with the mesh subset
-    '''
-    
-    mesh = mesh2gdf(ncObj, epsg)
-    
-    sub = readSubDomain(subDomain, epsg)
-    xAux, yAux = sub.geometry[0].exterior.coords.xy
-    extCoords = list(zip(xAux, yAux))
-    
-    elemCent = list(zip(mesh.centX, mesh.centY))
-    boolInside = pointsInsidePoly(elemCent, extCoords)
-    elemInsideIx = np.where(boolInside)[0]
-    gdfMeshSubset = mesh.iloc[elemInsideIx, :]
-    
-    return gdfMeshSubset
+    ## mesh subset
+    meshSub = mesh.iloc[centInside, :]
+    ## select nodes inside subdomain
+    nodesInside = meshSub.loc[:, ['v1', 'v2', 'v3']].values.reshape(-1)
+    nodesInside = np.unique(nodesInside)
+    aux = list(nodesInside)
+#     vertices = list(meshSub[['v1', 'v2', 'v3']].to_records(index=False))
+    ## aux to matrix to avoid for loop
+    auxm = np.broadcast_to(aux, (len(meshSub), len(aux)))
+    ## numpy to dask array to allow parallel computing
+    dauxm = da.array(auxm)
+    ## iteration over each node of all triangles
+    indlist = []
+    for iv, v in enumerate([meshSub.v1.values, meshSub.v2.values, meshSub.v3.values]):
+        ## vertices as matrix
+        vm =  np.broadcast_to(v, (len(aux), len(v))).T
+        ## numpy to dask array to allow parallel computing
+        dvm = da.array(vm)
+        ## absolute value of the difference between the node id and the list 
+        ## of all nodes id
+        vind = da.fabs(da.subtract(dvm, dauxm))
+        ## argmin to find the index of each node in the list of all nodes to make the list
+        ## of triangles
+        vind = da.argmin(vind, axis = 1)
+        indlist.append(vind)
+    ## merge as one matrix
+    mind = da.concatenate(indlist)
+    mind = mind.reshape((3, len(v)))
+#     xNodesInside = ncObj['x'][nodesInside].data
+#     yNodesInside = ncObj['y'][nodesInside].data
+#     tri = mpl.tri.Triangulation(xNodesInside, yNodesInside, mind.T) 
+    return mind, nodesInside
     
 def nc2xr(ncFile, var):
     ''' Write netcdf as xarray dataset. May be redundant but I had some problems reading adcirc files with xarray. NOT USED
@@ -625,8 +632,8 @@ def nc2xr(ncFile, var):
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, vDatumPath,
-           subDomain=None):
+def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
+            vDatumPath = None, subDomain=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -650,7 +657,7 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 list(datum_definition.keys())
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
-            vdatum_directory: string
+            vdatum_directory: string. Default None
                 full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
@@ -695,7 +702,7 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
 ####################################### GOOGLE EARTH ################################################
 
 def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.'):
-    ''' Create colorbar image to be imported in the kml file
+    ''' Create colorbar image to be imported in the kml file.
         Parameters
             levels: np.array
                 contour levels
@@ -704,7 +711,7 @@ def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorba
             units: string
                 units of the variable to export, just used for the legend.
             cmap: string
-                colormap name
+                colormap name. If varName is depth, the topo colormap from cmocean will be used.
             fileName: string
                 name of the colorbar img. Default tempColorbar.jpg.
             filePath: string
@@ -714,7 +721,10 @@ def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorba
                 
     '''
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
-    cmap = mpl.cm.get_cmap(cmap)
+    if cmap == 'topo':
+        cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
+    else:
+        cmap = mpl.cm.get_cmap(cmap)
     fig, ax = plt.subplots(figsize=(1, 8))
     cb = mpl.colorbar.ColorbarBase(ax, cmap = cmap, norm = norm, extend = 'neither',
                                     extendfrac = 'auto', ticks = levels, spacing = 'uniform',
@@ -797,7 +807,10 @@ def lines2kml(gdf, levels, cmap='viridis'):
             kml: simplekml object
     '''
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
-    cmap = mpl.cm.get_cmap(cmap)
+    if cmap == 'topo':
+        cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
+    else:
+        cmap = mpl.cm.get_cmap(cmap)
     m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
 
     kml = simplekml.Kml()
@@ -834,7 +847,10 @@ def polys2kml(gdf, levels, cmap='viridis'):
             kml: simplekml object
     '''
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
-    cmap = mpl.cm.get_cmap('viridis')
+    if cmap == 'topo':
+        cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
+    else:
+        cmap = mpl.cm.get_cmap(cmap)
     m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
 
     kml = simplekml.Kml()
@@ -894,68 +910,79 @@ def countVertices(gdf):
     '''
     nVertices = []
     for ix, x in enumerate(gdf.geometry):
-        poly = x
         a = 0
         try:
             a = a + len(list(x.exterior.coords))
         except:
-            for pol in poly:
+            for pol in x:
                 a = a + len(list(pol.exterior.coords))
         nVertices.append(a)
         
-        return nVertices
+    return nVertices
 
-def katana(geometry, threshold, count=0):
-    ''' Split a Polygon into two or more parts across it's shortest dimension
-        function taken from: 
-        https://snorfalorpagus.net/blog/2016/03/13/splitting-large-polygons-for-faster-intersections
+def splitOneGeom(geom):
+    ''' Splits a polygon using the diagonal of its bounding box (upper left to lower right corner).
         Parameters:
-            geometry: shapely polygon
-                polygon to devide
-            threshold: float
-                maximum area of the subpolygons
-            count: int
-                number of subareas. Default 0.
+            geom: shapely polygon
+                polygon to split
         Returns
-            final_result: list
-                list with new polygons
+            gdfSub: GeoDataFrame
+                gdf with new polygons
     '''
-    bounds = geometry.bounds
-    width = bounds[2] - bounds[0]
-    height = bounds[3] - bounds[1]
-    if max(width, height) <= threshold or count == 250:
-        # either the polygon is smaller than the threshold, or the maximum
-        # number of recursions has been reached
-        return [geometry]
-    if height >= width:
-        # split left to right
-        a = box(bounds[0], bounds[1], bounds[2], bounds[1]+height/2)
-        b = box(bounds[0], bounds[1]+height/2, bounds[2], bounds[3])
-    else:
-        # split top to bottom
-        a = box(bounds[0], bounds[1], bounds[0]+width/2, bounds[3])
-        b = box(bounds[0]+width/2, bounds[1], bounds[2], bounds[3])
-    result = []
-    for d in (a, b,):
-        c = geometry.intersection(d)
-        if not isinstance(c, GeometryCollection):
-            c = [c]
-        for e in c:
-            if isinstance(e, (Polygon, MultiPolygon)):
-                result.extend(katana(e, threshold, count+1))
-    if count > 0:
-        return result
-    # convert multipart into singlepart
-    final_result = []
-    for g in result:
-        if isinstance(g, MultiPolygon):
-            final_result.extend(g)
+    bounds = geom.bounds
+    ls = LineString([(bounds[0], bounds[3]), (bounds[2], bounds[1])])
+    newGeoms = split(geom, ls)
+    gdfSub = gpd.GeoDataFrame(geometry = [a for a in newGeoms], crs = 4326)
+    return gdfSub
+
+def splitAllGeoms(gdf, thres = 20_000):
+    ''' splitOneGeom is applied iteratively on a GeoDataFrame until all polygons have less than a 
+        certain number of vertices.
+        Parameters:
+            gdf: GeoDataFrame
+                Group of polygons to split
+            thres: int
+                max number of vertices for a polygon to have
+        Returns
+            gdfSubAll: GeoDataFrame
+                new polygons split
+    '''
+    a = len(gdf)
+    listGdf0 = []
+    count = 0
+    while a > 0:
+        listGdf1 = []
+#         print(count)
+        for ig, g in enumerate(gdf.geometry):
+            gdfSub = splitOneGeom(g)            
+            colsExtra = gdf.columns[1:-1]
+            values = np.tile(gdf.iloc[ig, 1:-1].values, len(gdfSub)).reshape((len(gdfSub), len(colsExtra)))
+            dfAux = pd.DataFrame(index = gdfSub.index, columns = colsExtra, data = values)
+            gdfSub = pd.concat([gdfSub, dfAux], axis = 1)
+            gdfSub['nVertices'] = countVertices(gdfSub)
+            dummy0 = gdfSub[gdfSub['nVertices'] > thres]
+            dummy1 = gdfSub[gdfSub['nVertices'] <= thres]
+            
+            if len(dummy1) > 0:
+                listGdf0.append(dummy1) ## polygons with less than 20_000 vertices
+            if len(dummy0) > 0:
+                listGdf1.append(dummy0) ## polygons with more than 20_000 vertices
+            
+        gdfB = pd.concat(listGdf1, axis = 0)
+        gdfB.index = range(len(gdfB))
+        if len(gdfB) == 1:
+            break
         else:
-            final_result.append(g)
+            gdf = gdfB.copy()
+        a = len(gdf)
+        count = count + 1
+    gdfSubAll = pd.concat(listGdf0, axis = 0)
+    gdfSubAll.index = range(len(gdfSubAll))
     
-    return final_result
+    return gdfSubAll
     
-def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
+def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, 
+           subDomain=None, overlay=True, logoFile='logo.png', colorbarFile='tempColorbar.jpg', 
            cmap='viridis', thresVertices=20_000):
     ''' Run all necesary functions to export adcirc outputs as kmz.
         Parameters
@@ -963,14 +990,21 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=T
                 path of the adcirc output, must be a netcdf file
             var: string
                 Name of the variable to export
-            levels: np.array
-                Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
+            levels: list
+                Contour levels, [min value, max value, step]
             conType: string
                 'polyline' or 'polygon'
             epsg: int
                 coordinate system
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
+            vUnitIn, vUnitOut: string
+                input and output vertical units. For the momment only supported 'm' and 'ft'
+            vdatumIn, vdatumOut: string
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates The crs must be the same of the
@@ -982,7 +1016,7 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=T
             colorbarFile: string. Default 'tempColorbar.jpg'
                 name of the colorbar img
             cmap: string. Default 'viridis'
-                name of the colormap
+                name of the colormap. If varName is depth, the topo colormap from cmocean will be used
             thresVertices: int
                 maximum number of vertices allowed per polygon. If a polygon has more vertices, the
                 katana function will be used.
@@ -991,34 +1025,57 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut,subDomain=None, overlay=T
     nc = netcdf.Dataset(ncFile, 'r')
     
     if checkTimeVarying(nc) == 1:
-        print('Time-varying files can not be exported as kmz!')
-        sys.exit(-1)
-    else:
-        levels = np.arange(levels[0], levels[1], levels[2])
-        
-        gdf = runExtractContours(nc, var, levels, conType, epsg)
-        
-        # if subDomain is not None:
-            # subDom = readSubDomain(subDomain, epsg)
-            # gdf = gpd.clip(gdf, subDom)
-        
-        # if conType == 'polygon':
-            # kml = polys2kml(gdf, levels, cmap)
-        # elif conType == 'polyline':
-            # kml = lines2kml(gdf, levels, cmap)
-        # else:
-            # print('Only "polygon" o "polyline" formats are supported')
-            # sys.exit(-1)
-        
-        # if overlay == True:
-            # name = nc[var].long_name.capitalize()
-            # units = nc[var].units
-            # createColorbar(levels, name, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.')
-            # kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=True, 
-                        # logoFile='logo.png', logoUnits='fraction', logoDims=None)
+        if var != 'depth':
+            print('Time-varying files can not be exported as kmz!')
+            sys.exit(-1)
             
-        # kml.savekmz(pathOut, format = False)
-        # os.remove('tempColorbar.jpg')
+    if var == 'depth':
+        cmap = 'topo'
+    
+    levels = np.arange(levels[0], levels[1], levels[2])
+    
+    gdf = runExtractContours(nc, var, levels, conType, epsg)
+    if conType == 'polygon':
+        gdf['nVertices'] = countVertices(gdf)
+        gdfA = gdf[gdf['nVertices'] > thresVertices]
+        gdfB = gdf[gdf['nVertices'] <= thresVertices]
+    
+        if len(gdfA) > 0:
+            gdfC = splitAllGeoms(gdfA, thresVertices)
+            gdf = pd.concat([gdfB, gdfC], axis = 0)
+            gdf.index = range(len(gdf))
+    
+    if subDomain is not None:
+        subDom = readSubDomain(subDomain, epsg)
+        gdf = gpd.clip(gdf, subDom)
         
-        return gdf
+    if vDatumIn == vDatumOut:
+        pass
+    else:
+        gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
+    
+    if vUnitIn == vUnitOut:
+        pass
+    else:
+        gdf = gdfChangeVerUnit(gdf, vUnitIn, vUnitOut)
+    
+    if conType == 'polygon':
+        kml = polys2kml(gdf, levels, cmap)
+    elif conType == 'polyline':
+        kml = lines2kml(gdf, levels, cmap)
+    else:
+        print('Only "polygon" o "polyline" formats are supported')
+        sys.exit(-1)
+    
+    if overlay == True:
+        name = nc[var].long_name.capitalize()
+        units = nc[var].units
+        createColorbar(levels, name, units, cmap=cmap, fileName=colorbarFile, filePath='.')
+        kmlScreenOverlays(kml, colorbar=True, colorbarFile=colorbarFile, logo=True, 
+                    logoFile=logoFile, logoUnits='fraction', logoDims=None)
+        
+    kml.savekmz(pathOut, format = False)
+    os.remove('tempColorbar.jpg')
+        
+    return gdf
 
