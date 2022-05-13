@@ -1,4 +1,2 @@
-module/__pycache__/
 scripts/.ipynb_checkpoints/
-module/__pycache__/kalpanaExport.cpython-39.pyc
-module/__pycache__/kalpanaDownscaling.cpython-39.pyc
+*.pyc

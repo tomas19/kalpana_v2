@@ -393,7 +393,7 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, grownRadius, pkg, 
     areas = pkg.read_command('r.stats', input = 'temp3', sort = 'desc', 
                             flags = 'c', quiet = True).split()
     
-    ncells = [x for x in areas[3::2] if int(x) >= 50]
+    ncells = [x for x in areas[3::2] if int(x) >= clumpSizeThreshold]
     clumpsID = [x for x, y in zip(areas[2::2], areas[1::2]) if int(y) >=  clumpSizeThreshold]
     #Interleave the two lists 
     areas = [val for tup in zip(clumpsID, ncells) for val in tup]
@@ -460,9 +460,9 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, grownRadius, pkg, 
                         type = 'area', format = 'ESRI_Shapefile', flags = 'se', quiet = True, overwrite = True)
         print(f'        export as shp depth: {(time.time() - ta)/60:0.3f}')
         
-def runStatic(ncFile, levels, epsgIn, epsgOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
-              var = 'zeta_max', conType = 'polygon', npro = 1, subDomain = None, pathGrassLocation = None, createGrassLocation = True,
-              createLocMethod = 'from_raster', rasterRes = 'align', attrCol = 'avgVal', growRadius = 500, compAdcirc2dem = True, 
+def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
+              var = 'zeta_max', conType = 'polygon', subDomain = None, vDatumPath = None, pathGrassLocation = None, createGrassLocation = True,
+              createLocMethod = 'from_raster', rasterRes = 'align', attrCol = 'zMean', growRadius = 500, compAdcirc2dem = True, 
               floodDepth = True, clumpThreshold = 50):
     ''' Run static downscaling method and the nc2shp function of the kalpanaExport module.
         Parameters
@@ -499,13 +499,13 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, pathOut,  grassVer, pathRasFiles,
                 Name of the variable to export
             conType: string. DEFAULT polygon
                 'polyline' or 'polygon'
-            npro: int. DEFAULT 1 (running in serial)
-                number of worker processes. More info: https://docs.python.org/3/library/multiprocessing.html#multiprocessing.pool.Pool.
-                For using all available processors, input 999.
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
                 adcirc input file.
+            vDatumPath: string. Default None
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
+                vDatumIn and vDatumOut are different
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of static method *****************************************
         ********************************************************************************************************************
@@ -528,7 +528,7 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, pathOut,  grassVer, pathRasFiles,
                 results will be shrink by growRadius.
             compAdcirc2dem: boolean. DEFAULT True
                 True for removing ADCIRC cells with values lower than the dem.
-            flooDepth: boolean . DEFAULT True
+            floodDepth: boolean . DEFAULT True
                 True for transform water levels to water depth. False for export water levelss.
             clumpThreshold: int. Default 50
                 threshold to delete isolated cells. Groups of cells smaller than threshold
@@ -540,7 +540,9 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, pathOut,  grassVer, pathRasFiles,
     if not os.path.exists(pathaux):
         os.mkdir(pathaux)
 
-    gdf = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, pathOut, npro, subDomain)
+    gdf = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
+                 vDatumPath, subDomain)
+
     t1 = time.time()
     print(f'    Shape file exported: {(t1 - t0)/60:0.2f} min')
     
