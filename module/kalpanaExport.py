@@ -208,7 +208,7 @@ def checkTimeVarying(ncObj):
     
     return timeVar
 
-def filledContours2gpd(tri, data, levels, epsg):
+def filledContours2gpd(tri, data, levels, epsg, pbar=False):
     ''' Dataset to GeoDataFrame with filled contours as shapely polygons.
         A dask delayed python decorator is used to handle the code's parallelization.
         Parameters
@@ -220,6 +220,8 @@ def filledContours2gpd(tri, data, levels, epsg):
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
             epsg: int
                 coordinate system
+            pbar: boolean. Default False
+                False for not displaying a progress bar with tqdm
         Returns
             gdf: GeoDataFrame
                 Polygons as geometry and contours min, average, max values as columns. 
@@ -283,8 +285,11 @@ def filledContours2gpd(tri, data, levels, epsg):
         return geoms
     
     tasks = [getGeom(icoll, coll) for icoll, coll in enumerate(contoursf.collections)]
-    with TqdmCallback(desc = "Compute contours using Dask"):
+    if pbar == False:
         daskGeoms = dask.compute(tasks, scheduler = 'threads')
+    else:
+        with TqdmCallback(desc = "Compute contours using Dask"):
+            daskGeoms = dask.compute(tasks, scheduler = 'threads')
     
     geoms = list(itertools.chain(*daskGeoms[0]))
     
@@ -298,7 +303,7 @@ def filledContours2gpd(tri, data, levels, epsg):
     
     return gdf
 
-def contours2gpd(tri, data, levels, epsg):
+def contours2gpd(tri, data, levels, epsg, pbar=False):
     ''' Dataset to GeoDataFrame with contours as shapely LineStrings
         A dask delayed python decorator is used to handle the code's parallelization.
         Parameters
@@ -310,6 +315,8 @@ def contours2gpd(tri, data, levels, epsg):
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
             epsg: int
                 coordinate system
+            pbar: boolean. Default False
+                False for not displaying a progress bar with tqdm
         Returns
             gdf: GeoDataFrame
                 Linestrings as geometry and contour value in the "value" column.
@@ -334,8 +341,11 @@ def contours2gpd(tri, data, levels, epsg):
         return geoms
 
     tasks = [getGeom(icoll, coll) for icoll, coll in enumerate(contours.collections)]
-    with TqdmCallback(desc = "Compute contours using Dask"):
+    if pbar == False:
         daskGeoms = dask.compute(tasks, scheduler = 'threads')
+    else:
+        with TqdmCallback(desc = "Compute contours using Dask"):
+            daskGeoms = dask.compute(tasks, scheduler = 'threads')
 
     geoms = list(itertools.chain(*daskGeoms[0]))
     geoms = list(itertools.chain(*geoms))
@@ -392,7 +402,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         
         if conType == 'polyline':
             labelCol = 'z'
-            gdf = contours2gpd(tri, aux, levels, epsg)
+            gdf = contours2gpd(tri, aux, levels, epsg, True)
         
         elif conType == 'polygon':
             labelCol = 'zMean'
@@ -401,7 +411,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             if maxmax > levels[-1]:
                 levels = np.append(levels, [np.ceil(maxmax)])
             
-            gdf = filledContours2gpd(tri, aux, levels, epsg)
+            gdf = filledContours2gpd(tri, aux, levels, epsg, True)
         
         else:
             print('only "polyline" and "polygon" types are supported!')
@@ -419,7 +429,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             for t in tqdm(range(ncObj['time'].shape[0])):
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
-                gdfi = contours2gpd(tri, aux, levels, epsg)
+                gdfi = contours2gpd(tri, aux, levels, epsg, False)
                 
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
                 gdfi['nTimeStep'] = [t]*len(gdfi)
@@ -432,7 +442,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             for t in tqdm(range(ncObj['time'].shape[0])):
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
-                gdfi = filledContours2gpd(tri, aux, levels, epsg)
+                gdfi = filledContours2gpd(tri, aux, levels, epsg, False)
                 
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
                 gdfi['nTimeStep'] = [t]*len(gdfi)
@@ -477,6 +487,8 @@ def mesh2gdf(ncObj, epsg):
     gdf['v1'] = nv.data[:, 0]
     gdf['v2'] = nv.data[:, 1]
     gdf['v3'] = nv.data[:, 2]
+    gdf['repLen'] = [geom.length/3 for geom in mesh.geometry]
+    gdf['area'] = [geom.area for geom in mesh.geometry]
     
     return gdf
     
@@ -635,7 +647,7 @@ def nc2xr(ncFile, var):
     return ds
     
 def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-            vDatumPath = None, subDomain=None):
+            vDatumPath = None, subDomain=None, exportMesh=False):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -668,6 +680,13 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
                 adcirc input file.
+            exportMesh: boolean. Default False
+                True for export the mesh geodataframe and also save it as a shapefile
+        Returns
+            gdf: GeoDataFrame
+                gdf with contours
+            mesh: GeoDataFrame, only if exportMesh is True
+                gdf with mesh elements, representative length and area of each triangle
     '''
     
     nc = netcdf.Dataset(ncFile, 'r')
@@ -702,7 +721,13 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
     elif pathOut.endswith('.wkt'):
         gdf.to_csv(pathOut)
     
-    return gdf
+    if exportMesh == True:
+        mesh = mesh2gdf(nc, epsgOut)
+        mesh.to_file(pathOut[:-4]+'_mesh.shp')
+        return gdf, mesh
+    
+    else:
+        return gdf
     
 ####################################### GOOGLE EARTH ################################################
 
