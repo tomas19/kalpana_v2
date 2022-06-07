@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+import geopandas as gpd
 from kalpanaExport import nc2shp, mesh2gdf
 
 '''
@@ -85,8 +86,8 @@ def createGrassLoc(grassVer, locPath, createLocMethod, myepsg, rasFile):
             createLocMethod: str
                 Two options "from_epsg" (default) or "from_raster" otherwise an error will be thrown.
             myepsg: int
-                epsg code (https://epsg.io/), only used if createLocMehot == "from_epsg". Default 4326.
-            rasFiles: str
+                epsg code (https://epsg.io/), only used if createLocMehot == "from_epsg".
+            rasFile: str
                 complete path of the raster which will be used to define the coordinate system
         Return
             None
@@ -126,11 +127,9 @@ def initGrass(locPath, pkg, mapset='PERMANENT'):
         Parameters
             locPath: str
                 path of the grass location
-            mapset: str
+            mapset: str. Default PERMANENT
                 mapset where the core data of the project can be stored
     '''
-    # #### import grass packages
-    # import grass.script.setup as gsetup
     #### init grass environment
     pkg.init(f'{locPath}\\{mapset}')
 
@@ -183,11 +182,12 @@ def setDownscalingDEM(rasList, pkg, lim=500):
             lim: int. Default 500
                 maximum number of raster to be imported at once before patching them
         Return
-            None
+            res: float
+                downscaling dem resolution in map units
     '''
     ## new line
     pkg.run_command('g.region', raster = rasList, quiet = True)
-
+    
     if 1 < len(rasList) < lim:
         pkg.run_command('r.patch', input = rasList, output = 'dem',
                         overwrite = True, quiet = True)
@@ -206,7 +206,7 @@ def setDownscalingDEM(rasList, pkg, lim=500):
         delFiles(pDems, 'raster', pkg)
     
     else:
-        pkg.run_command('g.rename', raster = f'{rasList[0]}, dem', 
+        pkg.run_command('g.rename', raster = (rasList[0], 'dem'), 
                         overwrite = True, quiet = True)
 
 def vertUnitConvert(conv, pkg):
@@ -280,41 +280,78 @@ def setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, pkg0, pkg1,
         initGrass(pathGrassLocation, pkg1)
         print(f'        init grass: {(time.time() - ta)/60: 0.3f} min')
         
-def setupGrowing(kalpanaShp, attrCol, pkg):
+def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
     ''' Preprocess kalpana shape file
         Parameters
             kalpanaShp: str
                 path of the shape file with AdCirc results
             attrCol: str
                 name of the attribute column
+            mesh2ras: boolean
+                True for converting the mesh vector layer to raster
+            meshFile: str
+                path of the shapefile with the mes elements or the rasterized version of it.
+                if mesh2ras is False, meshFile must be the path of a raster, if True of a shapefile.
+            minArea: int
+                Minimum size of area to be imported (square meters) 
+                
     '''
     ## import shape file with max water level
     # pkg.run_command('v.import', input = kalpanaShp, overwrite = True, 
                    # quiet = True, snap = 0.000001)
+    t0 = time.time()
     pkg.run_command('v.in.ogr', input = kalpanaShp, overwrite = True,
                     quiet = True, snap = 0.000001, min_area = 10,
                     flags = 'o')
-                    
+    print(f'        Import kalpana shapefile: {(time.time() - t0)/60:0.2f} min')
+    
+    t0 = time.time()
+    pkg.run_command('v.to.rast', input = os.path.basename(kalpanaShp[:-4]), 
+                    type = 'area', output = 'kalpanaRast', use = 'attr', 
+                    quiet = True, attribute_column = attrCol, overwrite = True)
+    print(f'        Kalpana shape to raster: {(time.time() - t0)/60:0.2f} min')
+    
+    if mesh2ras == True: #exportMesh is True so meshFile is a shapefile
+    
+        t0 = time.time()
+        # meshShp = os.path.join(pathaux, os.path.splitext(meshFile)[0]+'.shp')
+        pkg.run_command('v.in.ogr', input = meshFile, overwrite = True,
+                        quiet = True, min_area = int(minArea/100)*100, flags = 'co')
+        print(f'        Import mesh shapefile: {(time.time() - t0)/60:0.2f} min')
+        
+        t0 = time.time()
+        pkg.run_command('v.to.rast', input = os.path.splitext(os.path.basename(meshFile))[0], 
+                        type = 'area', use = 'attr', quiet = True, 
+                        attribute_column = 'repLen', overwrite = True,
+                        output = os.path.splitext(os.path.basename(meshFile))[0])
+        print(f'        Mesh shape to raster: {(time.time() - t0)/60:0.2f} min')
+        t0 = time.time()
+        pkg.run_command('r.out.gdal', input = os.path.splitext(os.path.basename(meshFile))[0], 
+                        flags = 'm', format = 'GTiff', nodata = -9999, overwrite = True,
+                        output = os.path.splitext(meshFile)[0] + '.tif')
+        print(f'        Mesh exported as raster: {(time.time() - t0)/60:0.2f} min')
+        
+    else: #exportMesh is True so meshFile is a raster
+        importRasters([meshFile], 'from_raster', pkg)
+        
     # reg = pkg.read_command('g.region', flags = 'g').split()
     
     # ewRes = float(reg[7].split("=")[1])
     # nsRes = float(reg[6].split("=")[1])
     # pkg.run_command('g.region', raster = 'dem', nsres = nsRes, 
                    # ewres = ewRes, overwrite = True, quiet = True)
-                   
-    pkg.run_command('v.to.rast', input = os.path.basename(kalpanaShp[:-4]), 
-                    type = 'area', output = 'kalpanaRast', use = 'attr', 
-                    quiet = True, attribute_column = attrCol, overwrite = True)
     # pkg.run_command('r.mask', raster = 'dem', quiet = True, 
                    # overwrite = True)
                    
-def staticGrow(repLenFactor, pkg):
+def staticGrow(repLenFactor, pkg, meshFile):
     ''' Execture r.grow.distance algorithm
         Parameters
             repLenFactor: float. Default 0.5
                 factor of the representative length of each triangle used as a maximum
                 growing distance. Adcirc results are expanded until the distance to the nearest non-null cel
                 is equals to the repLenFactor times the representative length of the triangle of the grown cell is in.
+            meshFile: str
+                name of the rasterized layer with the mesh elements representative size.
     '''
     # if growRadius == 0: ## grow raster cells without a limit distance
         # pkg.run_command('r.grow.distance', input = 'kalpanaRast', value = 'grownRastVal', overwrite = True,
@@ -323,15 +360,16 @@ def staticGrow(repLenFactor, pkg):
         # pkg.mapcalc("$output = if(!isnull($input), $input, if($base < $new, $new, null()))",
                     # output = 'grownKalpanaRast0', input = 'kalpanaRast', base = 'dem', 
                     # new = 'grownRastVal', quiet = True, overwrite = True)
-        
+     
     # elif growRadius > 0: ## grow raster cells with a limiting distance on growRadius
     # growRadiusSq = growRadius**2 #distance on r.grow is calculated using squared metric so it is the squared of the actual distance
+    
     pkg.run_command('r.grow.distance', input = 'kalpanaRast', metric = 'squared', distance = 'grownRastDist',
                     value = 'grownRastVal', overwrite = True, quiet = True) ## flag m: distance in meters
     
     repLenFactorSq = repLenFactor**2
-    gs.mapcalc("$output = if(!isnull($input), $input, if($dist <= repLenFactorSq * $radius * $radius, $new, null()))",
-          output = 'grownKalpanaRast', input = 'kalpanaRast', radius = 'meshSizeRast', base = 'dem',
+    pkg.mapcalc("$output = if(!isnull($input), $input, if($dist <= $fac * $radius * $radius, $new, null()))",
+          output = 'grownKalpanaRast0', input = 'kalpanaRast', radius = meshFile, base = 'dem', fac = repLenFactorSq,
           new = 'grownRastVal', dist = 'grownRastDist', quiet = True, overwrite = True)
     # pkg.mapcalc("$output = if(!isnull($input), $input, if($dist <= $radius && $base < $new, $new, null()))",
               # output = 'grownKalpanaRast0', input = 'kalpanaRast', radius = growRadiusSq, base = 'dem',
@@ -360,7 +398,7 @@ def clumping(rasterGrown, rasterOrg, rasterNew, clumpSizeThreshold, pkg):
                 name of the original raster with the non grown adcirc results
             rasterNew: str
                 name of the outpur raster
-            clumpSizeThreshold: int. Default 50
+            clumpSizeThreshold: int or float
                 threshold to delete isolated cells. Groups of cells smaller than threshold
                 will be removed if are not connected to the main water area.
     '''
@@ -373,9 +411,16 @@ def clumping(rasterGrown, rasterOrg, rasterNew, clumpSizeThreshold, pkg):
     areas = pkg.read_command('r.stats', input = 'temp2', sort = 'desc', 
                             flags = 'c', quiet = True).split()
     
+    rastInfo = pkg.parse_command('r.info', map = 'dem', flags = 'g', delimiter = '=')
+    nsres = float(rastInfo['nsres'])
+    ewres = float(rastInfo['ewres'])
+    res = 0.5*(nsres + ewres)
+    
+    clumpThres = int(clumpSizeThreshold / res)
+    
     #if clumpSizeThreshold != 'max':
-    ncells = [x for x in areas[3::2] if int(x) >= clumpSizeThreshold]
-    clumpsID = [x for x, y in zip(areas[2::2], areas[1::2]) if int(y) >=  clumpSizeThreshold]
+    ncells = [x for x in areas[3::2] if int(x) >= clumpThres]
+    clumpsID = [x for x, y in zip(areas[2::2], areas[1::2]) if int(y) >=  clumpThres]
     #Interleave the two lists 
     areas = [val for tup in zip(clumpsID, ncells) for val in tup]
 
@@ -402,9 +447,9 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
             kalpanaShp: str
                 path of the shape file with AdCirc results. It is used to save the
                 downscaled shp and raster files
-            clumpThreshold: str or int. Default 'from_mesh'
-                if it from_mesh the threshold will the related to the minimum element area,  if an
-                int number is input it will be used as the threshold
+            clumpThreshold: int or float
+                threshold to delete isolated cells. Groups of cells smaller than threshold will be removed 
+                if are not connected to the main water area.
             ras2vec: boolean. Default False
                 If False output raster are not saved as shapefiles
     '''
@@ -434,7 +479,7 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
     ta = time.time()
     # export raster as tif
     pkg.run_command('r.out.gdal', input = 'grownKalpanaRastLevel', flags = 'm', format = 'GTiff', nodata = -9999, 
-                   output = os.path.join(pathOut, f'{fileOut}_level_downscaled_Radius{grownRadius}m.tif'), 
+                   output = os.path.join(pathOut, f'{fileOut}_level_downscaled.tif'), 
                    overwrite = True)
     print(f'        export as tif level: {(time.time() - ta)/60:0.3f}')
     
@@ -446,7 +491,7 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
         
         ta = time.time()
         pkg.run_command('v.out.ogr', input = 'grownKalpanaVectLevel', 
-                          output = os.path.join(pathOut, f'{fileOut}_level_downscaled_Radius{grownRadius}m'), 
+                          output = os.path.join(pathOut, f'{fileOut}_level_downscaled'), 
                           type = 'area', format = 'ESRI_Shapefile', flags = 'se', quiet = True, overwrite = True)
         print(f'        export as shp level: {(time.time() - ta)/60:0.3f}')
     
@@ -459,7 +504,7 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
         ta = time.time()
         # export raster as tif
         pkg.run_command('r.out.gdal', input = 'grownKalpanaRastDepth', flags = 'm', format = 'GTiff', nodata = -9999, 
-                       output = os.path.join(pathOut, f'{fileOut}_depth_downscaled_Radius{grownRadius}m.tif'), 
+                       output = os.path.join(pathOut, f'{fileOut}_depth_downscaled.tif'), 
                        overwrite = True)
         print(f'        export as tif depth: {(time.time() - ta)/60:0.3f}')
         
@@ -471,14 +516,14 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
             
             ta = time.time()
             pkg.run_command('v.out.ogr', input = 'grownKalpanaVectDepth', 
-                            output = os.path.join(pathOut, f'{fileOut}_depth_downscaled_Radius{grownRadius}m'), 
+                            output = os.path.join(pathOut, f'{fileOut}_depth_downscaled'), 
                             type = 'area', format = 'ESRI_Shapefile', flags = 'se', quiet = True, overwrite = True)
             print(f'        export as shp depth: {(time.time() - ta)/60:0.3f}')
         
 def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
-              var = 'zeta_max', conType = 'polygon', subDomain = None, vDatumPath = None, pathGrassLocation = None, createGrassLocation = True,
-              createLocMethod = 'from_raster', attrCol = 'zMean', repLenGrowing = 0.5, meshShp = None, compAdcirc2dem = True, 
-              floodDepth = True, clumpThreshold = 'from_mesh', quantMinElemArea = 0, ras2vec = False):
+              var='zeta_max', conType ='polygon', subDomain=None, vDatumPath=None, exportMesh=False, n=-1, rs=42, aggfunc='mean',
+              pathGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster', attrCol='zMean', repLenGrowing=0.5, 
+              meshFile=None, compAdcirc2dem=True, floodDepth=True, clumpThreshold='from_mesh', perMinElemArea=1, ras2vec=False):
     ''' Run static downscaling method and the nc2shp function of the kalpanaExport module.
         Parameters
         ********************************************************************************************************************
@@ -510,13 +555,21 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
                 Name of the variable to export
             conType: string. DEFAULT polygon
                 'polyline' or 'polygon'
+            vDatumPath: string. Default None
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
+                vDatumIn and vDatumOut are different
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
                 adcirc input file.
-            vDatumPath: string. Default None
-                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
-                vDatumIn and vDatumOut are different
+            exportMesh: boolean. Default False
+                True for export the mesh geodataframe and also save it as a shapefile
+            n: int
+                factor used to compute the number of clusters. n_clusters = n_elements / n
+            rs: int. Default 42
+                Random state
+            aggfunc: str. Default mean
+                how to aggregate quantitative values
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of static method *****************************************
         ********************************************************************************************************************
@@ -533,38 +586,54 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
                 factor of the representative length of each triangle used as a maximum
                 growing distance. Adcirc results are expanded until the distance to the nearest non-null cel
                 is equals to the repLenFactor times the representative length of the triangle of the grown cell is in.
-            meshShp: string
-                path of the shapefile with the mesh elements. This file does not depend of the simulation it self, only on the mesh.
+            meshFile: string
+                path of the raster file with the mesh elements. This file does not depend of the simulation it self, only on the mesh.
                 So it is not necessary to export the adcirc mesh as a shapefile each time a simulation is downscaled. For speed up the
                 downscaling process this input should be not None only the first time a mesh is used.
             compAdcirc2dem: boolean. DEFAULT True
                 True for removing ADCIRC cells with values lower than the dem.
             floodDepth: boolean . DEFAULT True
                 True for transform water levels to water depth. False for export water levelss.
-            clumpThreshold: str or int. Default 'from_mesh'
-                threshold to delete isolated cells. Groups of cells smaller than threshold
-                will be removed if are not connected to the main water area. If equals 'from_mesh' the area of the triangles elements
-                are used to define the threshold.
-            quantMinElemArea: float. Default 0
-                quantile of the elements area distribution used as a threshold to delete unconnected groups of raster cells
+            clumpThreshold: str or int or float. Default 'from_mesh'
+                threshold to delete isolated cells. Groups of cells smaller than threshold will be removed if are not connected to the main water area. 
+                If equals 'from_mesh' the minimum area of the triangles elements is used to define the threshold. If int or float, this value will be used as
+                threshold, the unit of this number must be in the map units
+            perMinElemArea: float. Default 1
+                percentage of the smaller element's area used as a threshold to delete unconnected groups of raster cells. Only used if
+                clumpThreshold is "from_mesh".
             ras2vec: boolean. Default False
                 For speed up the process is recommended that raster files should not be converted to shapefiles (False).
     '''
     t0 = time.time()
-    print(f'Static downscaling started')
     pathaux = os.path.dirname(pathOut)
     if not os.path.exists(pathaux):
         os.mkdir(pathaux)
     
-    if meshShp == None:
+    if exportMesh == True:
         gdf, mesh = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-                     vDatumPath, subDomain, True)
+                           vDatumPath, subDomain, exportMesh, n, rs, aggfunc, os.path.splitext(os.path.basename(meshFile))[0])
+        meshFile = os.path.join(pathaux, os.path.splitext(os.path.basename(meshFile))[0] + '.shp')
     else:
         gdf = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
                      vDatumPath, subDomain)
+        mesh = gpd.read_file(os.path.splitext(meshFile)[0]+'.shp', ignore_geometry = True) # not fully sure if it is the best way
+    
+    if epsgOut == 4326:
+        sys.exit('Downscaling can not be done for the lat lon crs.')
+    
+    if clumpThreshold == 'from_mesh':
+        thres = mesh.elemArea.min() * perMinElemArea
+        unitEpsgOut = gdf.crs.axis_info[0].unit_name
+        if 'metre' in unitEpsgOut or 'meter' in unitEpsgOut:
+            pass
+        else: ## feet
+            thres = thres * 0.092903
+    else:
+        thres = clumpThreshold
 
+    print(f'Static downscaling started')
     t1 = time.time()
-    print(f'    Shape file exported: {(t1 - t0)/60:0.2f} min')
+    #print(f'    Shape file exported: {(t1 - t0)/60:0.2f} min')
     
     grassEnvVar(grassVer)
     ## import grass
@@ -578,33 +647,31 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     t11 = time.time()
     
     ## setup grass env
-    setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, pkg0, pkg1,
-                pathRasFiles, rasterFiles, createLocMethod, myepsg)
+    setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, gs, gsetup,
+                pathRasFiles, rasterFiles, createLocMethod, epsgOut)
     
     t2 = time.time()
     print(f'    Setup grass environment: {(t2 - t11)/60:0.2f} min')
     
      ## setup growing
     print(f'    Start Downscaling preprocess')
-    setupGrowing(pathOut, attrCol, gs)
+    ## here the thres must be in square meters
+    setupGrowing(pathOut, attrCol, exportMesh, meshFile, thres, gs)
     t3 = time.time()
     print(f'    Downscaling preprocess: {(t3 - t2)/60:0.3f} min')
     
     ## grow
     print(f'    Start growing')
-    staticGrow(repLenGrowing, gs)
+    staticGrow(repLenGrowing, gs, os.path.splitext(os.path.basename(meshFile))[0])
     t4 = time.time()
     print(f'    Ready with static grow: {(t4 - t3)/60:0.3f} min')
     
-    if clumpThreshold == 'from_mesh':
-        thres = mesh.area.quantile(quantMinElemArea)
-    else:
-        thres = clumpThreshold
     
    ## postprocess
     print(f'    Start postprocessing')
     postProcessStatic(compAdcirc2dem, floodDepth, pathOut, thres, gs, ras2vec)
     t5 = time.time()
     print(f'    Ready with postprocess: {(t5 - t4)/60:0.3f} min')
-    print(f'Ready with static downscaling: {(t5 - t0)/60:0.3f} min')
+    print(f'Ready with static downscaling: {(t5 - t1)/60:0.3f} min')
+    print(f'Kalpana finished sucsesfully after: {(t5 - t0)/60:0.3f} min')
     print(f'Output files saved on: {pathaux}')

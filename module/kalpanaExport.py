@@ -18,6 +18,7 @@ warnings.filterwarnings("ignore")
 import time
 import dask
 import dask.array as da
+import dask_ml.cluster
 from tqdm.dask import TqdmCallback
 from vyperdatum.points import VyperPoints
 from scipy.spatial import KDTree
@@ -460,13 +461,59 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         
     return gdf
 
-def mesh2gdf(ncObj, epsg):
+def clusteringMeshElem(x, y, n, rs=42):
+    ''' Compute clusters of the mesh element centroids using KMeans
+        Parameters
+            x, y: np.array
+                x, y coordinate of the mesh element centroids
+            n: int
+                factor used to compute the number of clusters. n_clusters = n_elements / n
+            rs: int. Default 42
+                Random state
+        Returns
+            pred: np.array
+                predicted cluster for each triangle
+            cents: np.array
+                coordinate of the centroid's center
+    '''
+    z = np.array((x, y)).T
+    z = z.copy(order = 'C')
+    clus = dask_ml.cluster.KMeans(n_clusters = int(len(x)/n), random_state = rs).fit(z)
+    pred = clus.predict(z)
+    cents = clus.cluster_centers_
+    return pred, cents
+    
+def dissElem(gdf, aggfunc='mean'):
+    ''' Dissolve mesh elements based on the cluster ID
+        Parameters:
+            gdf: GeoDataFrame
+                mesh
+            aggfunc: str. Default mean
+                how to aggregate quantitative values. More options on
+                https://geopandas.org/en/stable/docs/user_guide/aggregation_with_dissolve.html
+        Returns
+            simpGdf: GeoDataFrame
+                Dissolved geometries
+    '''
+    simpGdf = gdf.dissolve(by = 'clusID', aggfunc = 'mean')
+    simpGdf['repLen_std'] = gdf.groupby('clusID')['repLen'].std().values
+    return simpGdf
+
+def mesh2gdf(ncObj, epsgIn, epsgOut, n=-1,rs=42,aggfunc='mean'):
     ''' Write adcirc mesh as GeoDataFrame and extract centroid of each element. Used to create submesh
         Parameters:
             ncObj: netCDF4._netCDF4.Dataset
                 adcirc file
-            epsg: int
-                coordinate system
+            epsgIn: int
+                coordinate system of the adcirc input
+            epsgOut: int
+                coordinate system of the output shapefile
+            n: int
+                factor used to compute the number of clusters. n_clusters = n_elements / n
+            rs: int. Default 42
+                Random state
+            aggfunc: str. Default mean
+                how to aggregate quantitative values
         Returns
             gdf: GeoDataFrame
                 GeoDataFrame with polygons as geometry and centroid coordinates in columns
@@ -481,16 +528,33 @@ def mesh2gdf(ncObj, epsg):
     yvertices = y[tri.triangles[:]]
     listElem = np.stack((xvertices, yvertices), axis = 2)
     pols = [Polygon(x) for x in listElem]
-    gdf = gpd.GeoDataFrame(geometry = pols, crs = epsg)
+    gdf = gpd.GeoDataFrame(geometry = pols, crs = epsgIn)
+
+    if epsgIn == epsgOut:
+        pass
+    else:
+        gdf = gdf.to_crs(epsgOut)
+
     gdf['centX'] = xvertices.mean(axis = 1)
     gdf['centY'] = yvertices.mean(axis = 1)
     gdf['v1'] = nv.data[:, 0]
     gdf['v2'] = nv.data[:, 1]
     gdf['v3'] = nv.data[:, 2]
-    gdf['repLen'] = [geom.length/3 for geom in mesh.geometry]
-    gdf['area'] = [geom.area for geom in mesh.geometry]
     
-    return gdf
+    ## area and representative length are not computed if latlon epsg is requested
+    if epsgOut == 4326: 
+        pass
+    else:
+        gdf['repLen'] = [np.round(geom.length/3, 3) for geom in gdf.geometry]
+        gdf['elemArea'] = [np.round(geom.area, 3) for geom in gdf.geometry]
+    
+    if n != -1:
+        pred, centr = clusteringCentroids(gdf.centX, gdf.centY, n, rs)
+        gdf['clusID'] = pred
+        simpGdf = dissElem(gdf, aggfunc)
+        return simpGdf
+    else:
+        return gdf
     
 def readSubDomain(subDomain, epsg):
     ''' Read a user specified subdomain and transform it to GeoDataFrame
@@ -647,7 +711,7 @@ def nc2xr(ncFile, var):
     return ds
     
 def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-            vDatumPath = None, subDomain=None, exportMesh=False):
+            vDatumPath=None, subDomain=None, exportMesh=False, n=-1, rs=42, aggfunc='mean', meshName=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -682,6 +746,14 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 adcirc input file.
             exportMesh: boolean. Default False
                 True for export the mesh geodataframe and also save it as a shapefile
+            n: int
+                factor used to compute the number of clusters. n_clusters = n_elements / n
+            rs: int. Default 42
+                Random state
+            aggfunc: str. Default mean
+                how to aggregate quantitative values
+            meshName: str
+                file name of the output mesh shapefile
         Returns
             gdf: GeoDataFrame
                 gdf with contours
@@ -689,44 +761,62 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 gdf with mesh elements, representative length and area of each triangle
     '''
     
+    print('Start exporting adcirc to shape')
     nc = netcdf.Dataset(ncFile, 'r')
     levels = np.arange(levels[0], levels[1], levels[2])
-
+    
+    t00 = time.time()
     gdf = runExtractContours(nc, var, levels, conType, epsgIn)
+    print(f'    Ready with the contours extraction: {(time.time() - t00)/60:0.3f} min')
     
     if subDomain is not None:
+        t0 = time.time()
         subDom = readSubDomain(subDomain, epsgIn)
         gdf = gpd.clip(gdf, subDom)
-
+        print(f'    Cliping contours based on mask: {(time.time() - t0)/60:0.3f} min')
     if vDatumIn == vDatumOut:
         pass
     else:
+        t0 = time.time()
         gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
-    
+        print(f'    Vertical datum changed: {(time.time() - t0)/60:0.3f} min')
+        
     if vUnitIn == vUnitOut:
         pass
     else:
+        t0 = time.time()
         gdf = gdfChangeVerUnit(gdf, vUnitIn, vUnitOut)
+        print(f'    Vertical units changed: {(time.time() - t0)/60:0.3f} min')
     
     if epsgIn == epsgOut:
         pass
     else:
+        t0 = time.time()
         gdf = gdf.to_crs(epsgOut)
-        
+        print(f'    Changing CRS: {(time.time() - t0)/60:0.3f} min')
+    
+    t0 = time.time()
     if pathOut.endswith('.shp'):
         gdf.to_file(pathOut)
     elif pathOut.endswith('.gpkg'):
         gdf.to_file(pathOut, driver = 'GPKG')
-       
     elif pathOut.endswith('.wkt'):
         gdf.to_csv(pathOut)
+    print(f'    Saving file: {(time.time() - t0)/60:0.3f} min')
     
     if exportMesh == True:
-        mesh = mesh2gdf(nc, epsgOut)
-        mesh.to_file(pathOut[:-4]+'_mesh.shp')
+        print('    Exporting mesh')
+        t0 = time.time()
+        mesh = mesh2gdf(nc, epsgIn, epsgOut, n,rs,aggfunc)
+        # meshName = nc.agrid.replace(' ', '_').replace('.', '_')
+        mesh.to_file(os.path.join(os.path.dirname(pathOut), f'{meshName}.shp'))
+        print(f'    Mesh exported: {(time.time() - t0)/60:0.3f} min')
+        # mesh.to_feather(os.path.join(os.path.dirname(pathOut), f'mesh_{meshName}.feather'))
+        print(f'Ready with exporting code after: {(time.time() - t00)/60:0.3f} min')
         return gdf, mesh
     
     else:
+        print(f'Ready with exporting code after: {(time.time() - t00)/60:0.3f} min')
         return gdf
     
 ####################################### GOOGLE EARTH ################################################
