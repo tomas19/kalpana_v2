@@ -316,7 +316,7 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
         t0 = time.time()
         # meshShp = os.path.join(pathaux, os.path.splitext(meshFile)[0]+'.shp')
         pkg.run_command('v.in.ogr', input = meshFile, overwrite = True,
-                        quiet = True, min_area = int(minArea/100)*100, flags = 'co')
+                        quiet = True, min_area = int(minArea/100)*100, flags = 'o', snap = 0.000001)
         print(f'        Import mesh shapefile: {(time.time() - t0)/60:0.2f} min')
         
         t0 = time.time()
