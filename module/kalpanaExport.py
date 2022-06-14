@@ -22,6 +22,11 @@ import dask_ml.cluster
 from tqdm.dask import TqdmCallback
 from vyperdatum.points import VyperPoints
 from scipy.spatial import KDTree
+from itertools import islice
+
+'''
+    EXPLAIN WORKFLOW
+'''
 
 def gdfChangeVerUnit(gdf, ini, out):
     ''' Change vertical units of the columns of a GeoDataFrame which
@@ -39,22 +44,19 @@ def gdfChangeVerUnit(gdf, ini, out):
                 to the columns with "z" in it.
     '''
     gdf2 = gdf.copy()
-    # colsIni = [x if 'z' not in x else f'{x}_{ini}' for x in gdf2.columns]
-    # gdf2.columns = colsIni
-    
-    # cols = [x for x in gdf2.columns if 'z' in x]
+    ## select only columns with z in the name
     cols = [x for x in gdf2.columns if 'z' in x]
+    ## from m to ft
     if ini == 'm' and out == 'ft':
         for col in cols:
-            # colnew = col.replace(ini, out)
-            # gdf2[colnew] = gdf2[col] * 3.2808399
             gdf2[col] = gdf2[col] * 3.2808399
+    ## from ft to m
     elif ini == 'ft' and out == 'm':
         for col in cols:
-            # colnew = col.replace(ini, out)
-            # gdf2[colnew] = gdf2[col] / 3.2808399
             gdf2[col] = gdf2[col] / 3.2808399
-            
+    else:
+        sys.exit('Only m to ft or vice versa')
+    
     return gdf2
 
 def dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut):
@@ -78,19 +80,30 @@ def dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut):
                 of the closest valid point is assigned used the scipy KDTree algorithm.
                 
     '''
+    ## load vyperdatum
     vp = VyperPoints(vdatum_directory = vdatum_directory)
+    ## define vector with zeros to only get the difference between datums
     z = np.zeros(len(x))
+    ## call class
     vp = VyperPoints(silent = True)
+    ## get the difference between vertical datums on the requested points
     vp.transform_points((epsg, vdatumIn), (epsg, vdatumOut), x, y, z = z)
+    ## define dataframe
     df = pd.DataFrame({'x': x, 'y': y, 'dz0': vp.z})
+    ## get index of nan and non-nan outputs of the vydatum output
     indexVal = np.where(~np.isnan(df['dz0'].values))[0]
     indexNan = np.where(np.isnan(df['dz0'].values))[0]
+    ## define kdtree to do a nearest neighbor interpolation
     tree = KDTree(list(zip(df.loc[indexVal, 'x'], df.loc[indexVal, 'y'])))
+    ## asign nearest non-null difference to the null points
     query = tree.query(list(zip(df.loc[indexNan, 'x'], df.loc[indexNan, 'y'])))
+    ## dz0 column is the direct vdatum output
     aux0 = df.loc[indexVal, 'dz0']
     aux1 = aux0.values[query[1]]
+    ## dz1 column is the NN interpolation output
     df['dz1'] = [np.nan]*len(df)
     df.loc[indexNan, 'dz1'] = aux1
+    ## dz is the column with the combination of both
     df['dz'] = df['dz0'].fillna(0) + df['dz1'].fillna(0)
     
     return df
@@ -112,29 +125,23 @@ def gdfChangeVertDatum(vdatum_directory, gdf, vdatumIn = 'tss', vdatumOut = 'nav
                 updated geodataframe with the new datum added on the name 
                 to the columns with "z" on it.
         '''
-        ## get points
+        ## get centroid of each element
         gdf2 = gdf.copy()
         dummyList = [list(gdf2['geometry'][x].centroid.coords)[0] for x in gdf2.index]
         aux = list(zip(*dummyList))
+        ## array with the coordinates of the element's centroid
         x = np.array(aux[0])
         y = np.array(aux[1])
         z = np.zeros(len(x))
+        ## get epsg code
         epsg = int(gdf2.crs.to_string().split(':')[1])
         
-        # gdf2['xPolyCentroid'] = x
-        # gdf2['yPolyCentroid'] = y
-        
-        ## use vyperdatum to get difference betweem vdatumIn and vdatumOut
-        ## dz in m
+        ## call dzDatum function to get the vertical difference between datums
         df = dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut)
         
-        # newCols = [x if 'z' not in x else f'{x}_{vdatumIn}' for x in gdf2.columns]
-        # gdf2.columns = newCols
-        # aux = [x for x in gdf2.columns if vdatumIn in x]
         aux = [x for x in gdf2.columns if 'z' in x]
         for col in aux:
-            # newcol = col.replace(vdatumIn, vdatumOut)
-            # gdf2[newcol] = gdf2[col] + df.dz
+            ## add the computed difference to the columns with vertical data
             gdf2[col] = gdf2[col] + df.dz
         
         return gdf2
@@ -149,16 +156,19 @@ def classifyPolygons(polys):
             outer, inner: list
                 list with vertices of each type of polygon
     '''
+    ## compute area using signedArea function
     areas = np.array([signedArea(p) for p in polys])
+    ## get outer polygons where signed area is positive
     outer = [polys[x] for x in list(np.where(areas >= 0)[0])]
+    ## get inner polygons where signed area is negative
     inner = [polys[x] for x in list(np.where(areas < 0)[0])]
     
     return outer, inner
 
 def signedArea(ring):
-    ''' Return the signed area enclosed by a ring in linear time using the algorith at
+    ''' Return the signed area enclosed by a ring in linear time using the algorithm at
         https://web.archive.org/web/20080209143651/http://cgafaq.info:80/wiki/Polygon_Area.
-        Used in classifyPolygons.  
+        Used in classifyPolygons.
         Parameters
             ring: list
                 list with pairs of coordinates as tuples
@@ -228,16 +238,21 @@ def filledContours2gpd(tri, data, levels, epsg, pbar=False):
                 Polygons as geometry and contours min, average, max values as columns. 
                 The name of the variable, the date and other info are also included in the columns
     '''
-        
+    ## compute filled contours using matplotlib
     contoursf = plt.tricontourf(tri, data, levels = levels)
-    plt.close()  
+    ## close the generated plot
+    plt.close()
     
+    ## define dask delayed function to transform the matplotlib object to shapely polygons
     @dask.delayed
     def getGeom(icoll, coll):
+        ## get min and max value of the edge contours
         vmin, vmax = contoursf.levels[icoll:icoll+2]
-        vmean = np.mean([vmin, vmax])  
+        ## mean value of the polygon
+        vmean = np.mean([vmin, vmax])
         geoms = []
         
+        ## loop over polygon paths
         for p in coll.get_paths():
             p.simplify_threshold = 0.0
             # Removing polygons with less than 3 vertices
@@ -250,7 +265,7 @@ def filledContours2gpd(tri, data, levels, epsg, pbar=False):
                 inner_points = [pts[0] for pts in inner]
             ## array of booleans
             overall_inout = np.zeros((len(inner),), dtype = bool)
-
+            ## iteration through outer boundary
             for out in outer:
                 if len(inner) > 0:
                     ## check which inner polygons are inside out
@@ -284,20 +299,23 @@ def filledContours2gpd(tri, data, levels, epsg, pbar=False):
                 geoms.append((poly, vmin, vmax, vmean))
         
         return geoms
-    
+    ## define tasks to call the delayed function
     tasks = [getGeom(icoll, coll) for icoll, coll in enumerate(contoursf.collections)]
+    ## call dask without progress bar
     if pbar == False:
         daskGeoms = dask.compute(tasks, scheduler = 'threads')
+    ## call dask with progress bar
     else:
         with TqdmCallback(desc = "Compute contours using Dask"):
             daskGeoms = dask.compute(tasks, scheduler = 'threads')
-    
+    ## dask output to list
     geoms = list(itertools.chain(*daskGeoms[0]))
     
-    ## define geopandas
+    ## define geodataframe
     data = list(zip(*geoms))
     gdf = gpd.GeoDataFrame(crs = epsg, geometry = list(data[0]), 
                            index = range(len(data[0])))
+    ## add extra columns
     gdf['zMin'] = data[1]
     gdf['zMean'] = data[3]
     gdf['zMax'] = data[2]
@@ -323,39 +341,42 @@ def contours2gpd(tri, data, levels, epsg, pbar=False):
                 Linestrings as geometry and contour value in the "value" column.
                 The name of the variable, the date and other info are also included in the columns
     '''
-
+    ## compute non-filled contours using matplotlib
     contours = plt.tricontour(tri, data, levels = levels)
     plt.close()
-    
+    ## define dask delayed function to transform the matplotlib object to shapely polygons
     @dask.delayed
     def getGeom(icoll, coll):
 
         ## iteration over lines
         geoms = []
-
+        # loop over contours
         for icon, con in enumerate(contours.collections):
+            ## get value of the contour
             val = contours.levels[icon]
             paths = con.get_paths()
-            ## dismiss lines with less than 2 vertices
+            ## dismiss lines with less than 3 vertices
             aux0 = [(LineString(path.vertices), val) for path in paths if len(path.vertices) > 2]
             geoms.append(aux0)
         return geoms
-
+    ## define tasks to call the delayed function
     tasks = [getGeom(icoll, coll) for icoll, coll in enumerate(contours.collections)]
+    ## call dask without progress bar
     if pbar == False:
         daskGeoms = dask.compute(tasks, scheduler = 'threads')
+    ## call dask with progress bar
     else:
         with TqdmCallback(desc = "Compute contours using Dask"):
             daskGeoms = dask.compute(tasks, scheduler = 'threads')
 
     geoms = list(itertools.chain(*daskGeoms[0]))
-    geoms = list(itertools.chain(*geoms))
     
     ## define geopandas
     data = list(zip(*geoms))
     gdf = gpd.GeoDataFrame(crs = epsg, geometry = list(data[0]), 
                            index = range(len(data[0])))
    
+   ## add extra columns
     gdf['z'] = data[1]
     
     return gdf
@@ -378,11 +399,12 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
                 Polygons or polylines as geometry columns. If the requested file is time-varying the GeoDataFrame will include all timesteps.
             
     '''
-    
+    ## get triangles and nodes coordinates
     nv = ncObj['element'][:,:] - 1 ## triangles starts from 1
     x = ncObj['x'][:].data
     y = ncObj['y'][:].data
     
+    ## get extra info: variable name, variable long-name and unit name
     vname = ncObj[var].name
     lname = ncObj[var].long_name
     u = ncObj[var].units
@@ -390,70 +412,81 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
     ## matplotlib triangulation
     tri = mpl.tri.Triangulation(x, y, nv)
     
+    ## check if the time is time-varying
     timeVar = checkTimeVarying(ncObj)
+    ## if the variable requested is the bathymetry, values are inverted (times -1) for plotting
     if var == 'depth':
         timeVar = 0
         auxMult = -1
     else:
         auxMult = 1
     
+    ## time constant
     if timeVar == 0:
         aux = ncObj[var][:].data
+        ## change nan to -99999 and transform it to a 1D vector
         aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
-        
+        ## non-filled contours
         if conType == 'polyline':
             labelCol = 'z'
             gdf = contours2gpd(tri, aux, levels, epsg, True)
-        
+        ## filled contours
         elif conType == 'polygon':
             labelCol = 'zMean'
             ## add max value over time and domain to the levels, just for polting porpuses.
             maxmax = np.max(ncObj[var])
             if maxmax > levels[-1]:
                 levels = np.append(levels, [np.ceil(maxmax)])
-            
             gdf = filledContours2gpd(tri, aux, levels, epsg, True)
-        
+        ## error message
         else:
             print('only "polyline" and "polygon" types are supported!')
             sys.exit(-1)
-            
+        ## add more info to the geodataframe
         gdf['variable'] = [vname]*len(gdf)
         gdf['name'] = [lname]*len(gdf)
         gdf['labelCol'] = [f'{x:0.2f} {u}' for x in gdf[labelCol]]
-            
+    ## time varying
     else:
+        ## get epoch
         t0 = pd.to_datetime(ncObj['time'].units.split('since ')[1])
         listGdf = []
+        ## non-filled contours
         if conType == 'polyline':
             labelCol = 'z'
+            ## time loop
             for t in tqdm(range(ncObj['time'].shape[0])):
+                ## data to 1D non masked array
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
                 gdfi = contours2gpd(tri, aux, levels, epsg, False)
-                
+                ## add extra info to the gdf
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
                 gdfi['nTimeStep'] = [t]*len(gdfi)
                 gdfi['date'] = [str(t0 + ti)]*len(gdfi)
                 gdfi['nHours'] = [ti.total_seconds()/3600]*len(gdfi)
                 listGdf.append(gdfi)
-        
+        ## filled contours
         elif conType == 'polygon':
             labelCol = 'zMean'
+            ## time loop
             for t in tqdm(range(ncObj['time'].shape[0])):
+                ## data to 1D non masked array
                 aux = ncObj[var][t, :].data
                 aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
                 gdfi = filledContours2gpd(tri, aux, levels, epsg, False)
-                
+                ## add extra info to the gdf
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
                 gdfi['nTimeStep'] = [t]*len(gdfi)
                 gdfi['date'] = [str(t0 + ti)]*len(gdfi)
                 gdfi['nHours'] = [ti.total_seconds()/3600]*len(gdfi)
                 listGdf.append(gdfi)
+        ## error
         else:
             print('only "polyline" and "polygon" types are supported!')
             sys.exit(-1)
-            
+        
+        ## define output geodataframe
         gdf = gpd.GeoDataFrame(pd.concat(listGdf, axis=0, ignore_index=True), crs=epsg)
         gdf['variable'] = [vname]*len(gdf)
         gdf['name'] = [lname]*len(gdf)
@@ -476,10 +509,15 @@ def clusteringMeshElem(x, y, n, rs=42):
             cents: np.array
                 coordinate of the centroid's center
     '''
+    ## x and y 1D arrays to one 2D array
     z = np.array((x, y)).T
+    ## necceary for using dask clustering
     z = z.copy(order = 'C')
+    ## kmeans using dask
     clus = dask_ml.cluster.KMeans(n_clusters = int(len(x)/n), random_state = rs).fit(z)
+    ## get predicted cluster ID for each mesh element
     pred = clus.predict(z)
+    ## coordinate of the clusters centroid
     cents = clus.cluster_centers_
     return pred, cents
     
@@ -495,12 +533,16 @@ def dissElem(gdf, aggfunc='mean'):
             simpGdf: GeoDataFrame
                 Dissolved geometries
     '''
+    ## dissolve mesh elements using the cluster ID, --> merge all polygons with same cluster ID and
+    ## average all other parameters
     simpGdf = gdf.dissolve(by = 'clusID', aggfunc = 'mean')
+    ## compute standard deviation of the representative length of all triangles with same cluster ID
     simpGdf['repLen_std'] = gdf.groupby('clusID')['repLen'].std().values
     return simpGdf
 
 def mesh2gdf(ncObj, epsgIn, epsgOut, n=-1,rs=42,aggfunc='mean'):
-    ''' Write adcirc mesh as GeoDataFrame and extract centroid of each element. Used to create submesh
+    ''' Write adcirc mesh from netcdf as GeoDataFrame and extract centroid of each element. Used to create submesh
+        and for the downscaling process
         Parameters:
             ncObj: netCDF4._netCDF4.Dataset
                 adcirc file
@@ -519,22 +561,27 @@ def mesh2gdf(ncObj, epsgIn, epsgOut, n=-1,rs=42,aggfunc='mean'):
                 GeoDataFrame with polygons as geometry and centroid coordinates in columns
         
     '''
+    ## get triangles and nodes coordinates
     nv = ncObj['element'][:,:] - 1 ## triangles starts from 1
     x = ncObj['x'][:].data
     y = ncObj['y'][:].data
     ## matplotlib triangulation
     tri = mpl.tri.Triangulation(x, y, nv)
+    ## get the x and y coordinate of the triangle elements in the right order
     xvertices = x[tri.triangles[:]]
     yvertices = y[tri.triangles[:]]
+    ## add x and y togheter
     listElem = np.stack((xvertices, yvertices), axis = 2)
+    ## define polygons
     pols = [Polygon(x) for x in listElem]
+    ## define geodataframe
     gdf = gpd.GeoDataFrame(geometry = pols, crs = epsgIn)
-
+    ## change crs if epsgIn and epsgOut are different
     if epsgIn == epsgOut:
         pass
     else:
         gdf = gdf.to_crs(epsgOut)
-
+    ## add extra information to the mesh gdf, coordinates of the centroids and ID of each vertex
     gdf['centX'] = xvertices.mean(axis = 1)
     gdf['centY'] = yvertices.mean(axis = 1)
     gdf['v1'] = nv.data[:, 0]
@@ -545,10 +592,12 @@ def mesh2gdf(ncObj, epsgIn, epsgOut, n=-1,rs=42,aggfunc='mean'):
     if epsgOut == 4326: 
         pass
     else:
+        ## representative length is 1/3 of the perimeter
         gdf['repLen'] = [np.round(geom.length/3, 3) for geom in gdf.geometry]
         gdf['elemArea'] = [np.round(geom.area, 3) for geom in gdf.geometry]
     
     if n != -1:
+        ## clustering the mesh if requested
         pred, centr = clusteringCentroids(gdf.centX, gdf.centY, n, rs)
         gdf['clusID'] = pred
         simpGdf = dissElem(gdf, aggfunc)
@@ -578,14 +627,18 @@ def readSubDomain(subDomain, epsg):
         else:
             print('Only shape, geopackage and kml formats are suported for sub domain generation!')
             sys.exit(-1)
+        ## get exterior coordinates of the polygon
         xAux, yAux = gdfSubDomain.geometry[0].exterior.coords.xy
         extCoords = list(zip(xAux, yAux))
     
     elif type(subDomain) == list and len(subDomain) == 4:
         ## only UL lon, UL lat, LR lon LR lat
         ulLon, ulLat, lrLon, lrLat = subDomain
+        ## define list with exterior coordinates
         extCoords = [(ulLon, ulLat), (ulLon, lrLat), (lrLon, lrLat), (lrLon, ulLat), (ulLon, ulLat)]
+        ## define shapely polygon
         poly = Polygon(extCoords)
+        ## define gdf
         gdfSubDomain = gpd.GeoDataFrame(geometry = [poly], crs = epsg)
     else:
         print('subDomain must be the path of a kml or shapefile, or a list with the coordinates of ' \
@@ -762,39 +815,43 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
     '''
     
     print('Start exporting adcirc to shape')
+    ## read adcirc file
     nc = netcdf.Dataset(ncFile, 'r')
+    ## list of levels to array
     levels = np.arange(levels[0], levels[1], levels[2])
     
     t00 = time.time()
     gdf = runExtractContours(nc, var, levels, conType, epsgIn)
     print(f'    Ready with the contours extraction: {(time.time() - t00)/60:0.3f} min')
     
+    ## clip contours if requested
     if subDomain is not None:
         t0 = time.time()
         subDom = readSubDomain(subDomain, epsgIn)
         gdf = gpd.clip(gdf, subDom)
         print(f'    Cliping contours based on mask: {(time.time() - t0)/60:0.3f} min')
+    ## change vertical datum if requested
     if vDatumIn == vDatumOut:
         pass
     else:
         t0 = time.time()
         gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
         print(f'    Vertical datum changed: {(time.time() - t0)/60:0.3f} min')
-        
+    ## change vertical units if requested
     if vUnitIn == vUnitOut:
         pass
     else:
         t0 = time.time()
         gdf = gdfChangeVerUnit(gdf, vUnitIn, vUnitOut)
         print(f'    Vertical units changed: {(time.time() - t0)/60:0.3f} min')
-    
+    ## change CRS if requested
     if epsgIn == epsgOut:
         pass
     else:
         t0 = time.time()
         gdf = gdf.to_crs(epsgOut)
         print(f'    Changing CRS: {(time.time() - t0)/60:0.3f} min')
-    
+    ## save output shape file
     t0 = time.time()
     if pathOut.endswith('.shp'):
         gdf.to_file(pathOut)
@@ -803,15 +860,13 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
     elif pathOut.endswith('.wkt'):
         gdf.to_csv(pathOut)
     print(f'    Saving file: {(time.time() - t0)/60:0.3f} min')
-    
+    ## export mesh if requested
     if exportMesh == True:
         print('    Exporting mesh')
         t0 = time.time()
         mesh = mesh2gdf(nc, epsgIn, epsgOut, n,rs,aggfunc)
-        # meshName = nc.agrid.replace(' ', '_').replace('.', '_')
         mesh.to_file(os.path.join(os.path.dirname(pathOut), f'{meshName}.shp'))
         print(f'    Mesh exported: {(time.time() - t0)/60:0.3f} min')
-        # mesh.to_feather(os.path.join(os.path.dirname(pathOut), f'mesh_{meshName}.feather'))
         print(f'Ready with exporting code after: {(time.time() - t00)/60:0.3f} min')
         return gdf, mesh
     
@@ -819,6 +874,62 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
         print(f'Ready with exporting code after: {(time.time() - t00)/60:0.3f} min')
         return gdf
     
+def fort14togdf(filein, epsgIn, epsgOut):
+    ''' Write adcirc mesh from fort.14 file as GeoDataFrame and extract centroid of each element. 
+        Used in the downscaling process
+        Parameters:
+            filein: str
+                full path of the fort.14 file
+            epsgIn: int
+                coordinate system of the adcirc input
+            epsgOut: int
+                coordinate system of the output shapefile
+        Returns
+            gdf: GeoDataFrame
+                GeoDataFrame with polygons as geometry and more info such as: area, representative
+                element size, centroids coordinates, and vertices
+    '''
+    ## read only the two first lines of the file to get the number of elements and nodes
+    with open(filein) as fin:
+        head = list(islice(fin, 2))
+        data = [int(x) for x in head[1].split()]
+    ## read nodes
+    nodes = np.loadtxt(filein, skiprows = 2, max_rows = data[1], usecols = (1, 2))
+    ## read elements
+    elem = np.loadtxt(filein, skiprows = 2 + data[1], max_rows = data[0], usecols = (2, 3, 4)) - 1
+    x = nodes[:, 0]
+    y = nodes[:, 1]
+    ## matplotlib triangulation
+    tri = mpl.tri.Triangulation(x, y, elem)
+    ## select the coordinate of each vertex
+    xvertices = x[tri.triangles[:]]
+    yvertices = y[tri.triangles[:]]
+    listElem = np.stack((xvertices, yvertices), axis = 2)
+    ## define polygons and GeoDataFrame
+    pols = [Polygon(x) for x in listElem]
+    gdf = gpd.GeoDataFrame(geometry = pols, crs = 4326)
+    
+    ## change crs
+    if epsgIn == epsgOut:
+        pass
+    else:
+        gdf = gdf.to_crs(epsgOut)
+    
+    ## get centroids and vertices coordinatess
+    gdf['centX'] = xvertices.mean(axis = 1)
+    gdf['centY'] = yvertices.mean(axis = 1)
+    gdf['v1'] = elem[:, 0]
+    gdf['v2'] = elem[:, 1]
+    gdf['v3'] = elem[:, 2]
+    
+    ## compute area and presentative length if the output crs is not lat/lon
+    if epsgOut == 4326:
+        pass
+    else:
+        gdf['repLen'] = [np.round(geom.length/3, 3) for geom in gdf.geometry]
+        gdf['elemArea'] = [np.round(geom.area, 3) for geom in gdf.geometry]
+    
+    return gdf
 ####################################### GOOGLE EARTH ################################################
 
 def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.'):
@@ -840,17 +951,22 @@ def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorba
             None. The image will be dumped in the same path where the script is executed.
                 
     '''
+    ## define norm for the colrobar
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    ## get colorbar name if the requested variable is depth, the topo colormap from cmocean will be used
     if cmap == 'topo':
         cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
     else:
         cmap = mpl.cm.get_cmap(cmap)
+    ## define figure to export the colorbar image
     fig, ax = plt.subplots(figsize=(1, 8))
+    ## define colorbar
     cb = mpl.colorbar.ColorbarBase(ax, cmap = cmap, norm = norm, extend = 'neither',
                                     extendfrac = 'auto', ticks = levels, spacing = 'uniform',
                                     orientation = 'vertical')
-                                    
+    ## set label
     cb.set_label(f'{varName} [{units}]')
+    ## export image
     fig.savefig(os.path.join(filePath, fileName), dpi = 300, bbox_inches = 'tight')
     plt.close()
     
@@ -875,8 +991,11 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
             None    
     '''
     if colorbar == True:
+        ## define kml overlay to add the colorbar image
         screen1 = kml.newscreenoverlay(name='Colorbar')
+        ## add file
         screen1.icon.href = colorbarFile
+        ## define overlay size
         screen1.overlayxy = simplekml.OverlayXY(x= 0 , y = 0, xunits = simplekml.Units.fraction,
                                          yunits = simplekml.Units.fraction)
         screen1.screenxy = simplekml.ScreenXY(x = 0, y = 0.1, xunits = simplekml.Units.fraction,
@@ -885,14 +1004,15 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
         screen1.size.y = 0.55
         screen1.size.xunits = simplekml.Units.fraction
         screen1.size.yunits = simplekml.Units.fraction
-    
+    ## add overlay for the 
     if logo == True:
+        ## look logo in the github repository
         if logoFile == 'logo.png':
             aux0 = __file__
             aux1 = aux0.split('\\')
             aux2 = '\\'.join(aux1[:-2])
             logoFile = os.path.join(aux2, 'documentation', 'logoForKmz', logoFile)
-            
+        ## define new overlay
         screen2 = kml.newscreenoverlay(name = 'logo')
         screen2.icon.href = logoFile
         screen2.overlayxy = simplekml.OverlayXY(x = 0, y = 1, xunits = simplekml.Units.fraction,
@@ -915,7 +1035,6 @@ def kmlScreenOverlays(kml, colorbar=True, colorbarFile='tempColorbar.jpg', logo=
             
 def lines2kml(gdf, levels, cmap='viridis'):
     ''' Write GeoDataFrame with shapely linestrings as kml
-        TODO: ADD SYS.EXIT IF GDF HAS A DATE COLUMN?
         Parameters
             gdf: GeoDataFrame
                 output of runExtractContours function
@@ -926,27 +1045,35 @@ def lines2kml(gdf, levels, cmap='viridis'):
         Returns
             kml: simplekml object
     '''
+    ## define norm for the colrobar
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    ## get colorbar name if the requested variable is depth, the topo colormap from cmocean will be used
     if cmap == 'topo':
         cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
     else:
         cmap = mpl.cm.get_cmap(cmap)
+    ## get colormap to then transform the colors to simple kml
     m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
-
+    ## define kml
     kml = simplekml.Kml()
-    
+    ## loop through geometries
     for i in gdf.index:
+        ## new linestring object
         ls = kml.newlinestring(name = gdf.loc[i, 'labelCol'])
         try:
+            ## one line
             coords = list(gdf.loc[i, 'geometry'].coords)
         except:
+            ## more than one sub lines line
             aux = []
             for line in gdf.loc[i, 'geometry'].geoms:
                 aux.extend(list(line.coords))
-            # dummy = ops.linemerge(gdf.loc[i, 'geometry'])
             coords = aux
+        ## asign coordinates to the linestring object
         ls.coords = coords
+        ## add vertical value
         value = gdf.loc[i, 'z']
+        ## style
         r, g, b, a = m.to_rgba(value)
         ls.style.linestyle.color = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
         ls.style.linestyle.width = 2
@@ -966,37 +1093,45 @@ def polys2kml(gdf, levels, cmap='viridis'):
         Returns
             kml: simplekml object
     '''
+    ## define norm for the colrobar
     norm = mpl.colors.Normalize(vmin = levels[0], vmax = levels[-1])
+    ## get colorbar name if the requested variable is depth, the topo colormap from cmocean will be used
     if cmap == 'topo':
         cmap = cmocean.tools.crop(cmocean.cm.topo, levels[0], levels[-1], 0)
     else:
         cmap = mpl.cm.get_cmap(cmap)
+    ## get colormap to then transform the colors to simple kml
     m = mpl.cm.ScalarMappable(norm = norm, cmap = cmap)
-
+    ## define kml
     kml = simplekml.Kml()
-
+    ## loop through geometries
     for i in gdf.index:
+        ## the geometry has only one polygon
         try:
+            ## outer coordinates
             outerCoords = list(zip(gdf.loc[i, 'geometry'].exterior.coords.xy[0], 
                                         gdf.loc[i, 'geometry'].exterior.coords.xy[1]))
-
-            innerCoords = list(gdf.loc[i, 'geometry'].interiors)    
+            ## inner coordinates
+            innerCoords = list(gdf.loc[i, 'geometry'].interiors)
             if len(innerCoords) > 0:
                 innerCoords = [list(interior.coords) for interior in innerCoords]
-            
+            ## define kml polygon
             pol = kml.newpolygon(name = gdf.loc[i, 'labelCol'])
+            ## assign outer and inner coordinates
             pol.outerboundaryis = outerCoords
             pol.innerboundaryis = innerCoords
+            ## z value
             value = gdf.loc[i, 'zMean']
+            ## style
             r, g, b, a = m.to_rgba(value)
             col = simplekml.Color.rgb(int(255*r), int(255*g), int(255*b))
             pol.style.linestyle.color = col
             pol.style.linestyle.width = 2
             pol.description = gdf.loc[i, 'labelCol']
-    #         pol.style.polystyle.color = col
             pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
         
         except:
+            ## loop through all polygons in each geometry
             for poly in gdf.loc[i, 'geometry'].geoms:
                 outerCoords = list(zip(poly.exterior.coords.xy[0], 
                                         poly.exterior.coords.xy[1]))
@@ -1014,7 +1149,6 @@ def polys2kml(gdf, levels, cmap='viridis'):
                 pol.style.linestyle.color = col
                 pol.style.linestyle.width = 2
                 pol.description = gdf.loc[i, 'labelCol']
-        #         pol.style.polystyle.color = col
                 pol.style.polystyle.color = simplekml.Color.changealphaint(100, col)
 
     return kml
@@ -1030,10 +1164,13 @@ def countVertices(gdf):
     '''
     nVertices = []
     for ix, x in enumerate(gdf.geometry):
+        ## number of vertices
         a = 0
         try:
+            ## the geometry has only one polygon or linestring
             a = a + len(list(x.exterior.coords))
         except:
+            ## loop through all sub geometries in the geometry
             for pol in x:
                 a = a + len(list(pol.exterior.coords))
         nVertices.append(a)
@@ -1049,9 +1186,13 @@ def splitOneGeom(geom):
             gdfSub: GeoDataFrame
                 gdf with new polygons
     '''
+    ## get geometry bounding box
     bounds = geom.bounds
+    ## define bounding box diagonal
     ls = LineString([(bounds[0], bounds[3]), (bounds[2], bounds[1])])
+    ## split polyhon using the diabonal
     newGeoms = split(geom, ls)
+    ## define new geodataframe with the split geometries
     gdfSub = gpd.GeoDataFrame(geometry = [a for a in newGeoms], crs = 4326)
     return gdfSub
 
@@ -1070,16 +1211,23 @@ def splitAllGeoms(gdf, thres = 20_000):
     a = len(gdf)
     listGdf0 = []
     count = 0
+    ## iterate until the threshold is matched
     while a > 0:
         listGdf1 = []
-#         print(count)
         for ig, g in enumerate(gdf.geometry):
-            gdfSub = splitOneGeom(g)            
+            ## split the geometry
+            gdfSub = splitOneGeom(g)
+            ## extra columns
             colsExtra = gdf.columns[1:-1]
+            ## resize one row of data of the original gdf to match the shape of the new geodataframe with the split geom
             values = np.tile(gdf.iloc[ig, 1:-1].values, len(gdfSub)).reshape((len(gdfSub), len(colsExtra)))
+            ## auxiliary dataframe
             dfAux = pd.DataFrame(index = gdfSub.index, columns = colsExtra, data = values)
+            ## add geom to the auxiliary df
             gdfSub = pd.concat([gdfSub, dfAux], axis = 1)
+            ## add number of vertices
             gdfSub['nVertices'] = countVertices(gdfSub)
+            ## split the gdf between geoms with more and less vertices than the threshold
             dummy0 = gdfSub[gdfSub['nVertices'] > thres]
             dummy1 = gdfSub[gdfSub['nVertices'] <= thres]
             
@@ -1087,7 +1235,7 @@ def splitAllGeoms(gdf, thres = 20_000):
                 listGdf0.append(dummy1) ## polygons with less than 20_000 vertices
             if len(dummy0) > 0:
                 listGdf1.append(dummy0) ## polygons with more than 20_000 vertices
-            
+        ## gdf to be split again
         gdfB = pd.concat(listGdf1, axis = 0)
         gdfB.index = range(len(gdfB))
         if len(gdfB) == 1:
@@ -1141,21 +1289,24 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, vUnitIn, vUnitOut, vDatu
                 maximum number of vertices allowed per polygon. If a polygon has more vertices, the
                 katana function will be used.
     '''
-    # nc = nc2xr(ncFile, var)
+    ## read netcdf
     nc = netcdf.Dataset(ncFile, 'r')
     
+    ## check if the file is time-constant or time-varying
     if checkTimeVarying(nc) == 1:
+        ## file can time-varying but if the depth is requested, it can be exported to google earth
         if var != 'depth':
             print('Time-varying files can not be exported as kmz!')
             sys.exit(-1)
-            
+    ## colormap name for bathymetry
     if var == 'depth':
         cmap = 'topo'
-    
+    ## arrray with levels
     levels = np.arange(levels[0], levels[1], levels[2])
-    
+    ## extract contours
     gdf = runExtractContours(nc, var, levels, conType, epsg)
     if conType == 'polygon':
+        ## split polygons if necessary
         gdf['nVertices'] = countVertices(gdf)
         gdfA = gdf[gdf['nVertices'] > thresVertices]
         gdfB = gdf[gdf['nVertices'] <= thresVertices]
@@ -1164,21 +1315,21 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, vUnitIn, vUnitOut, vDatu
             gdfC = splitAllGeoms(gdfA, thresVertices)
             gdf = pd.concat([gdfB, gdfC], axis = 0)
             gdf.index = range(len(gdf))
-    
+    ## clip data if subdomain is provided
     if subDomain is not None:
         subDom = readSubDomain(subDomain, epsg)
         gdf = gpd.clip(gdf, subDom)
-        
+    ## change vertical datum if requested
     if vDatumIn == vDatumOut:
         pass
     else:
         gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
-    
+    ## change vertical units if requested
     if vUnitIn == vUnitOut:
         pass
     else:
         gdf = gdfChangeVerUnit(gdf, vUnitIn, vUnitOut)
-    
+    ## export to google earth
     if conType == 'polygon':
         kml = polys2kml(gdf, levels, cmap)
     elif conType == 'polyline':
@@ -1186,14 +1337,14 @@ def nc2kmz(ncFile, var, levels, conType, epsg, pathOut, vUnitIn, vUnitOut, vDatu
     else:
         print('Only "polygon" o "polyline" formats are supported')
         sys.exit(-1)
-    
+    ## add overlay if requested
     if overlay == True:
         name = nc[var].long_name.capitalize()
         units = nc[var].units
         createColorbar(levels, name, units, cmap=cmap, fileName=colorbarFile, filePath='.')
         kmlScreenOverlays(kml, colorbar=True, colorbarFile=colorbarFile, logo=True, 
                     logoFile=logoFile, logoUnits='fraction', logoDims=None)
-        
+    ## save file and remove temp colorbar image
     kml.savekmz(pathOut, format = False)
     os.remove('tempColorbar.jpg')
         
