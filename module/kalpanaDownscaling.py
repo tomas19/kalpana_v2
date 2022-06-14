@@ -4,13 +4,17 @@ import subprocess
 import sys
 import time
 import geopandas as gpd
-from kalpanaExport import nc2shp, mesh2gdf
+import rioxarray as rxr
+from rasterio.crs import CRS
+from kalpanaExport import nc2shp, mesh2gdf, fort14togdf
 
 '''
     All functions using GRASS GRIS has an argument 'pkg' which is the grass package.
     The package can't be imported before runing the 'grassEnvVar' function so it's
     not directly imported in this module and will be imported when the functions
     are executed.
+    
+    EXPLAIN WORKFLOW
 '''
 def delFiles(listFiles, typeFiles, pkg):
     ''' Delete files form a grass location
@@ -133,45 +137,40 @@ def initGrass(locPath, pkg, mapset='PERMANENT'):
     #### init grass environment
     pkg.init(f'{locPath}\\{mapset}')
 
-def importRasters(rasFiles, createLocMethod, pkg):
-    ''' Import rasters using Grass gis.
+def importRasters(rasFiles, pkg, myepsg):
+    ''' Import rasters to Grass gis location.
         Parameters
             rasFiles: list
                 list with complete path of each raster file
-            createLocMethod: str
-                Two options "from_epsg" (default) or "from_raster" otherwise an error will be thrown.
+            myepsg: int
+                Output coordinate reference system
         Returns
             rasterOutList: list
                 list with imported raster files
     '''
     #import grass.script as gs
     rasterOutList = []
-    #### using first raster resolution
-    if createLocMethod == 'from_raster':
-        for ras in rasFiles:
-            rasObj = os.path.basename(ras).split('.')[0]
-
-            pkg.run_command('r.import', overwrite = True, input = ras, output = rasObj)
-            rasterOutList.append(rasObj)
-
-    elif createLocMethod == 'from_epsg':
-        for ras in rasFiles:
-            rasObj = os.path.basename(ras).split('.')[0]
-            try:
-                pkg.run_command('r.in.gdal', overwrite = True, input = ras, output=rasObj, 
+    for ras in rasFiles:
+        ## get filename without extension
+        rasObj = os.path.basename(ras).split('.')[0]
+        rasterOutList.append(rasObj)
+        ## load raster with rasterio xarray
+        r = rxr.open_rasterio(ras)
+        ## get crs
+        crs = r.rio.crs
+        if crs == None: ## file is not georrefenced
+            pkg.run_command('r.in.gdal', overwrite = True, input = ras, output=rasObj, 
                                 flags = 'o')
-            except:
-                ## check this line, the code didn't work when a large number of rasters
-                ## were imported
-                time.sleep(10)
-                pkg.run_command('r.in.gdal', overwrite=True, input=ras, output=rasObj, 
-                                flags = 'o')
-            rasterOutList.append(rasObj)
+        else:
+            crs = crs.to_string()
+            if '4326' in crs:
+                ## reproject file before loading it into grass location
+                reprojectRas(ras, myepsg)
+                rasNew = os.path.splitext(ras)[0] + f'_epsg{myepsg}.tif'
+                pkg.run_command('r.import', overwrite = True, input = rasNew, output = rasObj)
+            else:
+                pkg.run_command('r.import', overwrite = True, input = ras, output = rasObj)
 
-    else:
-        print('Raster resolution options are "align" or an integer value')
-        sys.exit(-1)
-        
     return rasterOutList
 
 def setDownscalingDEM(rasList, pkg, lim=500):
@@ -195,8 +194,8 @@ def setDownscalingDEM(rasList, pkg, lim=500):
     
     elif len(rasList) >= lim:
         pDems = []
-        for i in range(int(len(grassRasList)/lim) + 1):
-            sublist = grassRasList[i*lim:(i+1)*lim]
+        for i in range(int(len(rasList)/lim) + 1):
+            sublist = rasList[i*lim:(i+1)*lim]
             pkg.run_command('r.patch', input = sublist, output = f'dem{i:03d}',
                 overwrite = True, quiet = True)
             pDems.append(f'dem{i:03d}')
@@ -268,7 +267,7 @@ def setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, pkg0, pkg1,
         print(f'        init grass: {(time.time() - ta)/60: 0.3f} min')
         
         ta = time.time()
-        grassRasList = importRasters(rasFiles, createLocMethod, pkg0) ## try rasters with different resolution? check if rasters are in different crs that location
+        grassRasList = importRasters(rasFiles, pkg0, myepsg) ## try rasters with different resolution? check if rasters are in different crs that location
         print(f'        import raster: {(time.time() - ta)/60: 0.3f} min')
         
         ta = time.time()
@@ -280,7 +279,7 @@ def setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, pkg0, pkg1,
         initGrass(pathGrassLocation, pkg1)
         print(f'        init grass: {(time.time() - ta)/60: 0.3f} min')
         
-def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
+def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg, myepsg):
     ''' Preprocess kalpana shape file
         Parameters
             kalpanaShp: str
@@ -294,6 +293,8 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
                 if mesh2ras is False, meshFile must be the path of a raster, if True of a shapefile.
             minArea: int
                 Minimum size of area to be imported (square meters) 
+            myepsg: int
+                Output coordinate reference system
                 
     '''
     ## import shape file with max water level
@@ -316,7 +317,7 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
         t0 = time.time()
         # meshShp = os.path.join(pathaux, os.path.splitext(meshFile)[0]+'.shp')
         pkg.run_command('v.in.ogr', input = meshFile, overwrite = True,
-                        quiet = True, min_area = int(minArea/100)*100, flags = 'o', snap = 0.000001)
+                        quiet = True, min_area = int(minArea/100)*100, flags = 'o', snap = 0.1)
         print(f'        Import mesh shapefile: {(time.time() - t0)/60:0.2f} min')
         
         t0 = time.time()
@@ -332,7 +333,7 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg):
         print(f'        Mesh exported as raster: {(time.time() - t0)/60:0.2f} min')
         
     else: #exportMesh is True so meshFile is a raster
-        importRasters([meshFile], 'from_raster', pkg)
+        importRasters([meshFile], pkg, myepsg)
         
     # reg = pkg.read_command('g.region', flags = 'g').split()
     
@@ -418,16 +419,17 @@ def clumping(rasterGrown, rasterOrg, rasterNew, clumpSizeThreshold, pkg):
     
     clumpThres = int(clumpSizeThreshold / res)
     
-    #if clumpSizeThreshold != 'max':
-    ncells = [x for x in areas[3::2] if int(x) >= clumpThres]
-    clumpsID = [x for x, y in zip(areas[2::2], areas[1::2]) if int(y) >=  clumpThres]
-    #Interleave the two lists 
-    areas = [val for tup in zip(clumpsID, ncells) for val in tup]
-
+    ## find index of '*' --> it is used to indentify the clump masked
+    try:
+        i = areas.index('*')
+        areas.pop(i)
+        areas.pop(i)
+    except: ## just in case a DEM has not masked value (rare)
+        pass
+    
+    ## get clump ID of the ones with more cells than thres
+    clumpsID = [x for x, y in zip(areas[::2], areas[1::2]) if int(y) >=  clumpThres]
     reclassList = ''.join([f"{i} = -1\n" for i in areas[::2]])
-        
-    #else:
-     #   reclassList = f"{areas[2]} = -1"
     
     pkg.write_command('r.reclass', input = 'temp2', output = 'temp3', rules = '-', 
                 stdin = reclassList, quiet = True, overwrite = True)
@@ -522,7 +524,7 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
         
 def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
               var='zeta_max', conType ='polygon', subDomain=None, vDatumPath=None, exportMesh=False, n=-1, rs=42, aggfunc='mean',
-              pathGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster', attrCol='zMean', repLenGrowing=0.5, 
+              nameGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster', attrCol='zMean', repLenGrowing=1.0, 
               meshFile=None, compAdcirc2dem=True, floodDepth=True, clumpThreshold='from_mesh', perMinElemArea=1, ras2vec=False):
     ''' Run static downscaling method and the nc2shp function of the kalpanaExport module.
         Parameters
@@ -573,7 +575,7 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of static method *****************************************
         ********************************************************************************************************************
-            pathGrassLocation: str. DEFAULT None
+            nameGrassLocation: str. DEFAULT None
                 path and name of the grass location. If None the grass location will be called 'grassLoc' and save in the 
                 same path of the extracted shape file (pathout).
             createGrassLocation: boolean. DEFAULT True
@@ -623,11 +625,11 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     
     if clumpThreshold == 'from_mesh':
         thres = mesh.elemArea.min() * perMinElemArea
-        unitEpsgOut = gdf.crs.axis_info[0].unit_name
-        if 'metre' in unitEpsgOut or 'meter' in unitEpsgOut:
-            pass
-        else: ## feet
-            thres = thres * 0.092903
+        # unitEpsgOut = gdf.crs.axis_info[0].unit_name
+        # if 'metre' in unitEpsgOut or 'meter' in unitEpsgOut:
+            # pass
+        # else: ## feet
+            # thres = thres * 0.092903
     else:
         thres = clumpThreshold
 
@@ -640,9 +642,12 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     import grass.script as gs
     import grass.script.setup as gsetup
     
-    if pathGrassLocation == None:
+    if nameGrassLocation == None:
         pathGrassLocation = os.path.join(pathaux, 'grassLoc')
+    else:
+        pathGrassLocation = os.path.join(pathaux, nameGrassLocation)
     
+    print(pathGrassLocation)
     print(f'    Start Setup grass environment')
     t11 = time.time()
     
@@ -656,7 +661,7 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
      ## setup growing
     print(f'    Start Downscaling preprocess')
     ## here the thres must be in square meters
-    setupGrowing(pathOut, attrCol, exportMesh, meshFile, thres, gs)
+    setupGrowing(pathOut, attrCol, exportMesh, meshFile, thres, gs, epsgOut)
     t3 = time.time()
     print(f'    Downscaling preprocess: {(t3 - t2)/60:0.3f} min')
     
@@ -675,3 +680,105 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     print(f'Ready with static downscaling: {(t5 - t1)/60:0.3f} min')
     print(f'Kalpana finished sucsesfully after: {(t5 - t0)/60:0.3f} min')
     print(f'Output files saved on: {pathaux}')
+    
+def meshRepLen2raster(fort14, epsgIn, epsgOut, pathOut, grassVer, pathRasFiles, rasterFiles, subDomain=None, nameGrassLocation=None, createGrassLocation=True, 
+                      createLocMethod='from_raster'):
+    ''' Function to rasterize mesh shapefile created from the fort.14 file
+        Parameters
+            fort14: str
+                full path of the fort.14 file
+            epsgIn: int
+                coordinate system of the adcirc input
+            epsgOut: int
+                coordinate system of the output shapefile
+            grassVer: float
+                Version of the grass software (The code was writen for v8.0).
+            pathRasters: str
+                path of the raster files
+            rasterFiles: list or str
+                name(s) of the raster file(s).
+            subDomain: str or list. Default None
+                complete path of the subdomain polygon kml or shapelfile, or list with the
+                uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
+                adcirc input file.
+            nameGrassLocation: str. DEFAULT None
+                path and name of the grass location. If None the grass location will be called 'grassLoc' and save in the 
+                same path of the extracted shape file (pathout).
+            createGrassLocation: boolean. DEFAULT True
+                True for creating a new location and loading DEMs, false to use an existing location with DEMs already imported
+             createLocMethod: str. DEFAULT 'from_raster'
+                 Two options "from_epsg" (default) or "from_raster" otherwise an error will be thrown.
+        Returns
+            NOne
+    '''
+    ## create gdf from fort14 file with elements as geometries
+    t0 = time.time()
+    gdfMesh = fort14togdf(fort14, 4326, 6543)
+    print(f'fort14 to mesh: {(time.time() - t0)/60:0.3f} min')
+    
+    ## clip contours if requested
+    if subDomain is not None:
+        t0 = time.time()
+        subDom = readSubDomain(subDomain, epsgIn)
+        gdfMesh = gpd.clip(gdfMesh, subDom)
+        print(f'Clip mesh using subfomain: {(time.time() - t0)/60:0.3f} min')
+        
+    ## export gdf as shapefile
+    t0 = time.time()
+    gdfMesh.to_file(pathOut)
+    print(f'Export mesh gdf as shapefile: {(time.time() - t0)/60:0.3f} min')
+    ## path where the grass loc will be created
+    pathaux = os.path.dirname(pathOut)
+    ## add grass to the environment variables
+    grassEnvVar(grassVer)
+    ## import grass
+    import grass.script as gs
+    import grass.script.setup as gsetup
+    ## grass location path
+    if nameGrassLocation == None:
+        pathGrassLocation = os.path.join(pathaux, 'grassLoc')
+    else:
+        pathGrassLocation = os.path.join(pathaux, nameGrassLocation)
+
+    print(f'    Start Setup grass environment')
+    t11 = time.time()
+    ## setup grass env
+    setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, gs, gsetup,
+                pathRasFiles, rasterFiles, createLocMethod, epsgOut)
+    ## get minimum area
+    minArea = gdfMesh.elemArea.min()
+    t0 = time.time()
+    ## load mesh into grass
+    gs.run_command('v.in.ogr', input = pathOut, overwrite = True,
+                    quiet = True, min_area = int(minArea/100)*100, flags = 'o', snap = 0.1)
+    print(f'        Import mesh shapefile: {(time.time() - t0)/60:0.2f} min')
+    ## mesh shapefile to raster
+    t0 = time.time()
+    gs.run_command('v.to.rast', input = os.path.splitext(os.path.basename(pathOut))[0], 
+                    type = 'area', use = 'attr', quiet = True, 
+                    attribute_column = 'repLen', overwrite = True,
+                    output = os.path.splitext(os.path.basename(pathOut))[0])
+    print(f'        Mesh shape to raster: {(time.time() - t0)/60:0.2f} min')
+    ## export raster
+    t0 = time.time()
+    gs.run_command('r.out.gdal', input = os.path.splitext(os.path.basename(pathOut))[0], 
+                    flags = 'm', format = 'GTiff', nodata = -9999, overwrite = True,
+                    output = os.path.splitext(pathOut)[0] + '.tif')
+    print(f'        Mesh exported as raster: {(time.time() - t0)/60:0.2f} min')
+    
+def reprojectRas(filein, epsgOut):
+    ''' Reproject rasters in WGS84
+        Parameters
+            filein: str
+                full path of the input raster
+            epsgOut: int
+                coordinate system of the output raster
+        Returns
+            aux: int
+                1 if the raster file was reproject, 0 otherwise
+    '''
+    ## open raster
+    rasIn = rxr.open_rasterio(filein)
+    ## reproject if raster is in wgs84 (lat/lon)
+    rasOut = rasIn.rio.reproject(epsgOut)
+    rasOut.rio.to_raster(os.path.splitext(filein)[0] + f'_epsg{epsgOut}.tif')
