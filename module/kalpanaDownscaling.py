@@ -364,14 +364,17 @@ def staticGrow(repLenFactor, pkg, meshFile):
      
     # elif growRadius > 0: ## grow raster cells with a limiting distance on growRadius
     # growRadiusSq = growRadius**2 #distance on r.grow is calculated using squared metric so it is the squared of the actual distance
-    
+    t0 = time.time()
     pkg.run_command('r.grow.distance', input = 'kalpanaRast', metric = 'squared', distance = 'grownRastDist',
                     value = 'grownRastVal', overwrite = True, quiet = True) ## flag m: distance in meters
-    
+    t1 = time.time()
+    print(f'        Running r.grow algorithm: {(t1 - t0)/60:0.3f} min')
     repLenFactorSq = repLenFactor**2
     pkg.mapcalc("$output = if(!isnull($input), $input, if($dist <= $fac * $radius * $radius, $new, null()))",
           output = 'grownKalpanaRast0', input = 'kalpanaRast', radius = meshFile, base = 'dem', fac = repLenFactorSq,
           new = 'grownRastVal', dist = 'grownRastDist', quiet = True, overwrite = True)
+    t2 = time.time()
+    print(f'        Limit grown raster using adcirc mesh: {(t2 - t1)/60:0.3f} min')
     # pkg.mapcalc("$output = if(!isnull($input), $input, if($dist <= $radius && $base < $new, $new, null()))",
               # output = 'grownKalpanaRast0', input = 'kalpanaRast', radius = growRadiusSq, base = 'dem',
               # new = 'grownRastVal', dist = 'grownRastDist', quiet = True, overwrite = True)
@@ -670,7 +673,6 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     staticGrow(repLenGrowing, gs, os.path.splitext(os.path.basename(meshFile))[0])
     t4 = time.time()
     print(f'    Ready with static grow: {(t4 - t3)/60:0.3f} min')
-    
     
    ## postprocess
     print(f'    Start postprocessing')
