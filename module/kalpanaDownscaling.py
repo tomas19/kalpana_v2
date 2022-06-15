@@ -60,26 +60,34 @@ def grassEnvVar(grassVer):
             None
     '''
     ########### Launch GRASS
-    grassBin = f'C:\\Program Files\GRASS GIS {grassVer}\\grass{10*grassVer:0.0f}.bat'
-    startCmd = [grassBin, '--config', 'path']
+    if sys.platform == 'win32':
+        grassBin = f'C:\\Program Files\GRASS GIS {grassVer}\\grass{10*grassVer:0.0f}.bat'
+        startCmd = [grassBin, '--config', 'path']
 
-    p = subprocess.Popen(startCmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = p.communicate()
-    out = out.strip().decode('utf-8')
+        p = subprocess.Popen(startCmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate()
+        out = out.strip().decode('utf-8')
 
-    if p.returncode != 0:
-        print(f'ERROR: {err}', file=sys.stderr)
-        print(f'ERROR: Cannot find GRASS GIS {grassVer} start script: {startCmd}', file=sys.stderr)
-        sys.exit(-1)
+        if p.returncode != 0:
+            print(f'ERROR: {err}', file=sys.stderr)
+            print(f'ERROR: Cannot find GRASS GIS {grassVer} start script: {startCmd}', file=sys.stderr)
+            sys.exit(-1)
 
-    ########### Add environment variables
-    gisbase = out.strip(os.linesep)
-    os.environ['GISBASE'] = gisbase
+        ########### Add environment variables
+        gisbase = out.strip(os.linesep)
+        os.environ['GISBASE'] = gisbase
 
-    ########### Init GRASS environment
-    gpydir = os.path.join(gisbase, "etc", "python")
-    sys.path.append(gpydir)
+        ########### Init GRASS environment
+        gpydir = os.path.join(gisbase, "etc", "python")
+        sys.path.append(gpydir)
+    
+    elif sys.platform == 'linux':
+        sys.path.append(subprocess.check_output(["grass", "--config", "python_path"],
+                                                    text=True).strip())
 
+    else:
+        print('OS not known! only windows and linux are supported')
+        
 def createGrassLoc(grassVer, locPath, createLocMethod, myepsg, rasFile):
     ''' Create a Grass location for the downscaling methods. 
         Parameters
@@ -97,21 +105,22 @@ def createGrassLoc(grassVer, locPath, createLocMethod, myepsg, rasFile):
             None
     '''
     ########### Create location
-    grassBin = f'C:\\"Program Files"\\"GRASS GIS {grassVer}"\\grass{10*grassVer:0.0f}.bat'
-
+    if sys.platform == 'win32':
+        grassBin = f'C:\\"Program Files"\\"GRASS GIS {grassVer}"\\grass{10*grassVer:0.0f}.bat'
+    elif sys.platform == 'linux':
+        grasBin = 'grass'
+    else:
+        print('OS not known! only windows and linux are supported')
     #### check if location already exist
     if os.path.isdir(locPath):
         shutil.rmtree(locPath)
     else:
         pass
-        # os.mkdir(locPath)
-        # print(f'{locPath} created')
 
     #### epsg can be obtained from a raster or specified by the user
     if createLocMethod == 'from_epsg':
         startCmd = grassBin + ' -c epsg:' + str(myepsg) + ' -e ' + locPath
     elif createLocMethod == 'from_raster':
-        #print(f'Projection from {rasFile}')
         startCmd = grassBin + ' -c ' + rasFile + ' -e ' + locPath
     else:
         sys.exit('The create location method specified is incorrect. See the docstring!')
@@ -123,8 +132,6 @@ def createGrassLoc(grassVer, locPath, createLocMethod, myepsg, rasFile):
         print(f'ERROR: {err}', file = sys.stderror)
         print(f'"ERROR: Cannot create location {startCmd}', file = sys.stderror)
         sys.exit(-1)
-    #else:
-        #print(f'Created location {locPath}')
 
 def initGrass(locPath, pkg, mapset='PERMANENT'):
     ''' Set grass working environment
@@ -135,7 +142,7 @@ def initGrass(locPath, pkg, mapset='PERMANENT'):
                 mapset where the core data of the project can be stored
     '''
     #### init grass environment
-    pkg.init(f'{locPath}\\{mapset}')
+    pkg.init(os.path.join(locPath, mapset))
 
 def importRasters(rasFiles, pkg, myepsg):
     ''' Import rasters to Grass gis location.
@@ -298,8 +305,6 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg, myepsg):
                 
     '''
     ## import shape file with max water level
-    # pkg.run_command('v.import', input = kalpanaShp, overwrite = True, 
-                   # quiet = True, snap = 0.000001)
     t0 = time.time()
     pkg.run_command('v.in.ogr', input = kalpanaShp, overwrite = True,
                     quiet = True, snap = 0.000001, min_area = 10,
@@ -315,7 +320,6 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg, myepsg):
     if mesh2ras == True: #exportMesh is True so meshFile is a shapefile
     
         t0 = time.time()
-        # meshShp = os.path.join(pathaux, os.path.splitext(meshFile)[0]+'.shp')
         pkg.run_command('v.in.ogr', input = meshFile, overwrite = True,
                         quiet = True, min_area = int(minArea/100)*100, flags = 'o', snap = 0.1)
         print(f'        Import mesh shapefile: {(time.time() - t0)/60:0.2f} min')
@@ -334,16 +338,7 @@ def setupGrowing(kalpanaShp, attrCol, mesh2ras, meshFile, minArea, pkg, myepsg):
         
     else: #exportMesh is True so meshFile is a raster
         importRasters([meshFile], pkg, myepsg)
-        
-    # reg = pkg.read_command('g.region', flags = 'g').split()
-    
-    # ewRes = float(reg[7].split("=")[1])
-    # nsRes = float(reg[6].split("=")[1])
-    # pkg.run_command('g.region', raster = 'dem', nsres = nsRes, 
-                   # ewres = ewRes, overwrite = True, quiet = True)
-    # pkg.run_command('r.mask', raster = 'dem', quiet = True, 
-                   # overwrite = True)
-                   
+
 def staticGrow(repLenFactor, pkg, meshFile):
     ''' Execture r.grow.distance algorithm
         Parameters
@@ -354,14 +349,6 @@ def staticGrow(repLenFactor, pkg, meshFile):
             meshFile: str
                 name of the rasterized layer with the mesh elements representative size.
     '''
-    # if growRadius == 0: ## grow raster cells without a limit distance
-        # pkg.run_command('r.grow.distance', input = 'kalpanaRast', value = 'grownRastVal', overwrite = True,
-                        # quiet = True)
-        
-        # pkg.mapcalc("$output = if(!isnull($input), $input, if($base < $new, $new, null()))",
-                    # output = 'grownKalpanaRast0', input = 'kalpanaRast', base = 'dem', 
-                    # new = 'grownRastVal', quiet = True, overwrite = True)
-     
     # elif growRadius > 0: ## grow raster cells with a limiting distance on growRadius
     # growRadiusSq = growRadius**2 #distance on r.grow is calculated using squared metric so it is the squared of the actual distance
     t0 = time.time()
@@ -375,22 +362,6 @@ def staticGrow(repLenFactor, pkg, meshFile):
           new = 'grownRastVal', dist = 'grownRastDist', quiet = True, overwrite = True)
     t2 = time.time()
     print(f'        Limit grown raster using adcirc mesh: {(t2 - t1)/60:0.3f} min')
-    # pkg.mapcalc("$output = if(!isnull($input), $input, if($dist <= $radius && $base < $new, $new, null()))",
-              # output = 'grownKalpanaRast0', input = 'kalpanaRast', radius = growRadiusSq, base = 'dem',
-              # new = 'grownRastVal', dist = 'grownRastDist', quiet = True, overwrite = True)
-    
-    # else: #growradius < 0 --> shrink results, not sure why it is usefull but it was in the original version of kalpana
-        # kv = pkg.region()
-        # scale = np.sqrt(kv['nsres'] * kv['ewres'])
-        # growRadiusPixelsSq = (growRadius * scale)**2
-        # pkg.run_command('r.grow.distance', input = 'kalpanaRast', metric = 'squared', distance = 'grownRastDist', 
-                          # value = 'grownRastVal', flags = 'n', quiet = True,
-                          # overwrite = True)  ## flag n: distance to the nearest NO-NULL cell. value in pixels
-        
-        # pkg.mapcalc("$output = if($dist < $radius, null(), $input)", output = 'grownKalpanaRast0', 
-                    # radius = growRadiusPixelsSq, input = 'kalpanaRast', dist = 'grownRastDist', 
-                    # quiet = True, overwrite = True)
-                   
 
 def clumping(rasterGrown, rasterOrg, rasterNew, clumpSizeThreshold, pkg):
     ''' Function to deal with clump of disconnected cells generated after remove cells
@@ -638,7 +609,6 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
 
     print(f'Static downscaling started')
     t1 = time.time()
-    #print(f'    Shape file exported: {(t1 - t0)/60:0.2f} min')
     
     grassEnvVar(grassVer)
     ## import grass
@@ -683,8 +653,8 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     print(f'Kalpana finished sucsesfully after: {(t5 - t0)/60:0.3f} min')
     print(f'Output files saved on: {pathaux}')
     
-def meshRepLen2raster(fort14, epsgIn, epsgOut, pathOut, grassVer, pathRasFiles, rasterFiles, subDomain=None, nameGrassLocation=None, createGrassLocation=True, 
-                      createLocMethod='from_raster'):
+def meshRepLen2raster(fort14, epsgIn, epsgOut, pathOut, grassVer, pathRasFiles, rasterFiles, subDomain=None, 
+                      nameGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster'):
     ''' Function to rasterize mesh shapefile created from the fort.14 file
         Parameters
             fort14: str
