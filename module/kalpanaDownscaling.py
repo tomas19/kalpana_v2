@@ -107,7 +107,7 @@ def createGrassLoc(grassVer, locPath, createLocMethod, myepsg, rasFile):
     if sys.platform == 'win32':
         grassBin = f'C:\\"Program Files"\\"GRASS GIS {grassVer}"\\grass{10*grassVer:0.0f}.bat'
     elif sys.platform == 'linux':
-        grasBin = 'grass'
+        grassBin = 'grass'
     else:
         print('OS not known! only windows and linux are supported')
     #### check if location already exist
