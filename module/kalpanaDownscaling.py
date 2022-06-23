@@ -82,8 +82,7 @@ def grassEnvVar(grassVer):
         sys.path.append(gpydir)
     
     elif sys.platform == 'linux':
-        sys.path.append(subprocess.check_output(["grass", "--config", "python_path"],
-                                                    text=True).strip())
+        sys.path.append(subprocess.check_output(["grass", "--config", "python_path"], text=True).strip())
 
     else:
         print('OS not known! only windows and linux are supported')
@@ -264,10 +263,12 @@ def setGrassEnv(grassVer, pathGrassLocation, createGrassLocation, pkg0, pkg1,
         ta = time.time()
         rasFiles = rastersToList(pathRasFiles, rasterFiles) ## list with path of rasters to import
         print(f'        rasters to list: {(time.time() - ta)/60: 0.3f} min')
-        
-        ta = time.time()
-        createGrassLoc(grassVer, pathGrassLocation, createLocMethod, myepsg, rasFiles[0])
-        print(f'        create location: {(time.time() - ta)/60: 0.3f} min')
+        if os.path.exists(rasFiles[0]):
+            ta = time.time()
+            createGrassLoc(grassVer, pathGrassLocation, createLocMethod, myepsg, rasFiles[0])
+            print(f'        create location: {(time.time() - ta)/60: 0.3f} min')
+        else:
+            sys.exit(f'Raster file does not exist: {rasFiles[0]}')
         
         ta = time.time()
         initGrass(pathGrassLocation, pkg1)
@@ -496,8 +497,9 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
                             type = 'area', format = 'ESRI_Shapefile', flags = 'se', quiet = True, overwrite = True)
             print(f'        export as shp depth: {(time.time() - ta)/60:0.3f}')
         
-def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
-              var='zeta_max', conType ='polygon', subDomain=None, vDatumPath=None, exportMesh=False, n=-1, rs=42, aggfunc='mean',
+def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
+              epsgIn=4326, vUnitIn='m', vUnitOut='ft', vDatumIn='tss', vDatumOut='navd88', var='zeta_max', 
+              conType ='polygon', subDomain=None, vDatumPath=None, exportMesh=False, n=-1, rs=42, aggfunc='mean',
               nameGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster', attrCol='zMean', repLenGrowing=1.0, 
               meshFile=None, compAdcirc2dem=True, floodDepth=True, clumpThreshold='from_mesh', perMinElemArea=1, ras2vec=False):
     ''' Run static downscaling method and the nc2shp function of the kalpanaExport module.
@@ -509,8 +511,6 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
                 path of the adcirc output, must be a netcdf file
             levels: np.array
                 Contour levels. The max value in the entire doman and over all timesteps is added to the requested levels.
-            epsgIn: int
-                coordinate system of the adcirc input
             epsgOut: int
                 coordinate system of the output shapefile
             pathout: string
@@ -527,6 +527,15 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of nc2shp function ***************************************
         ********************************************************************************************************************
+            epsgIn: int. Default 4326
+                coordinate system of the adcirc input
+            vUnitIn, vUnitOut: string. Default for vUnitIn is 'm' and 'ft' for vUnitOut
+                input and output vertical units. For the momment only supported 'm' and 'ft'
+            vDatumIn, vDatumOut: string. Default for vDatumIn is 'tss' and for vDatumOut is 'navd88.
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
             var: string. DEFAULT zeta_max
                 Name of the variable to export
             conType: string. DEFAULT polygon
@@ -586,12 +595,13 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
         os.mkdir(pathaux)
     
     if exportMesh == True:
-        gdf, mesh = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-                           vDatumPath, subDomain, exportMesh, n, rs, aggfunc, os.path.splitext(os.path.basename(meshFile))[0])
+        gdf, mesh = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, vDatumOut, 
+                            epsgIn, vUnitIn, vDatumIn, vDatumPath, subDomain, exportMesh, n, rs, aggfunc,
+                            os.path.splitext(os.path.basename(meshFile))[0])
         meshFile = os.path.join(pathaux, os.path.splitext(os.path.basename(meshFile))[0] + '.shp')
     else:
-        gdf = nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-                     vDatumPath, subDomain)
+        gdf = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, vDatumOut, 
+                     epsgIn, vUnitIn, vDatumIn, vDatumPath, subDomain)
         mesh = gpd.read_file(os.path.splitext(meshFile)[0]+'.shp', ignore_geometry = True) # not fully sure if it is the best way
     
     if epsgOut == 4326:
@@ -599,11 +609,6 @@ def runStatic(ncFile, levels, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDat
     
     if clumpThreshold == 'from_mesh':
         thres = mesh.elemArea.min() * perMinElemArea
-        # unitEpsgOut = gdf.crs.axis_info[0].unit_name
-        # if 'metre' in unitEpsgOut or 'meter' in unitEpsgOut:
-            # pass
-        # else: ## feet
-            # thres = thres * 0.092903
     else:
         thres = clumpThreshold
 

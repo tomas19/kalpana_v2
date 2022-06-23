@@ -763,8 +763,9 @@ def nc2xr(ncFile, var):
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDatumIn, vDatumOut, pathOut, 
-            vDatumPath=None, subDomain=None, exportMesh=False, n=-1, rs=42, aggfunc='mean', meshName=None):
+def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatumOut='navd88', 
+           epsgIn=4326, vUnitIn='m', vDatumIn='tss', vDatumPath=None, subDomain=None, 
+           exportMesh=False, n=-1, rs=42, aggfunc='mean', meshName=None):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -773,21 +774,22 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
                 Name of the variable to export
             levels:list
                 Contour levels. Min, Max and Step. Max is not included as in np.arange method.
+                Values must be in vUnitOut vertical unit.
             conType: string
                 'polyline' or 'polygon'
-            epsgIn: int
-                coordinate system of the adcirc input
             epsgOut: int
                 coordinate system of the output shapefile
-            vUnitIn, vUnitOut: string
+            vUnitIn, vUnitOut: string. Default for vUnitIn is 'm' and 'ft' for vUnitOut
                 input and output vertical units. For the momment only supported 'm' and 'ft'
-            vdatumIn, vdatumOut: string
+            vDatumIn, vDatumOut: string. Default for vDatumIn is 'tss' and for vDatumOut is 'navd88.
                 name of the input and output vertical datums. Mean sea level is "tss"
                 For checking the available datums:
                 from vyperdatum.pipeline import datum_definition
                 list(datum_definition.keys())
             pathout: string
                 complete path of the output file (*.shp or *.gpkg)
+            epsgIn: int. Default 4326.
+                coordinate system of the adcirc input
             vdatum_directory: string. Default None
                 full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
             vDatumPath: string. Default None
@@ -817,6 +819,11 @@ def nc2shp(ncFile, var, levels, conType, epsgIn, epsgOut, vUnitIn, vUnitOut, vDa
     print('Start exporting adcirc to shape')
     ## read adcirc file
     nc = netcdf.Dataset(ncFile, 'r')
+    ## change units of the requested levels
+    if vUnitIn == 'm' and vUnitOut == 'ft':
+        levels = [l / 3.2808399 for l in levels]
+    elif vUnitIn == 'ft' and vUnitOut == 'm':
+        levels = [l * 3.2808399 for l in levels]
     ## list of levels to array
     levels = np.arange(levels[0], levels[1], levels[2])
     
