@@ -434,9 +434,9 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         elif conType == 'polygon':
             labelCol = 'zMean'
             ## add max value over time and domain to the levels, just for polting porpuses.
-            maxmax = np.max(ncObj[var])
-            if maxmax > levels[-1]:
-                levels = np.append(levels, [np.ceil(maxmax)])
+            # maxmax = np.max(ncObj[var])
+            # if maxmax > levels[-1]:
+                # levels = np.append(levels, [np.ceil(maxmax)])
             gdf = filledContours2gpd(tri, aux, levels, epsg, True)
         ## error message
         else:
