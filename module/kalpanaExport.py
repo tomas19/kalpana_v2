@@ -433,10 +433,6 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
         ## filled contours
         elif conType == 'polygon':
             labelCol = 'zMean'
-            ## add max value over time and domain to the levels, just for polting porpuses.
-            # maxmax = np.max(ncObj[var])
-            # if maxmax > levels[-1]:
-                # levels = np.append(levels, [np.ceil(maxmax)])
             gdf = filledContours2gpd(tri, aux, levels, epsg, True)
         ## error message
         else:
@@ -825,7 +821,10 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatum
     elif vUnitIn == 'ft' and vUnitOut == 'm':
         levels = [l * 3.2808399 for l in levels]
     ## list of levels to array
-    levels = np.arange(levels[0], levels[1], levels[2])
+    levels_aux = np.arange(levels[0], levels[1] + levels[2], levels[2])
+    ## given levels will now match the avarege value of each interval
+    levels_aux = levels_aux - levels[2]/2
+    levels = levels_aux.copy()
     
     t00 = time.time()
     gdf = runExtractContours(nc, var, levels, conType, epsgIn)
