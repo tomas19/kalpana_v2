@@ -59,92 +59,84 @@ def gdfChangeVerUnit(gdf, ini, out):
     
     return gdf2
 
-def dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut):
+def dzDatum(vdatum_directory, x, y, pathout, vdatumIn='tss', 
+            vdatumOut='navd88', epsg1=6319, epsg2=7912,
+            areaFile="xGeoid20B.gpkg"):
     ''' Get the vertical difference of two datums on a group of locations
         Parameters
             vdatum_directory: string
                 full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
             x, y: numpy array
                 x and y-coordinate of the group of points
-            epsg: int
-                coordinate system code of the data. eg: 4326 for wgs84 (lat/lon)
-            vdatumIn, vdatumOut: string
+            vdatumIn, vdatumOut: string. Defaults, 'tss' and 'navd88'
                 name of the input and output vertical datums. Mean sea level is "tss"
                 For checking the available datums:
                 from vyperdatum.pipeline import datum_definition
                 list(datum_definition.keys())
+            epsg1, epsg2: int. Defaults 6319 and 7912
+                coordinate system code of the data. Points inside Chesapeake/Delaware bay needs to be
+                converted using a different epsgs code (7912). 
+            areaFile: str
+                complete path of if a polygon geopackage file with the area of the Chesapeake/Delaware bay
+                where the epgs2 code is needed.
         Returns
             df: dataframe
-                dataframe with the coordinates of the requested points. The dz0 column is the raw
-                datum difference from vdatum, but it can also output NaN values. In this case the difference
-                of the closest valid point is assigned used the scipy KDTree algorithm.
-                
+                dataframe with the vertical difference between datums of the requested points.     
     '''
-    ## load vyperdatum
-    vp = VyperPoints(vdatum_directory = vdatum_directory)
+    ## load area where the epsg 7912 is needed
+    aux0 = __file__
+    aux1 = aux0.split('\\')
+    aux2 = '\\'.join(aux1[:-2])
+    areaFile = os.path.join(aux2, 'inputFiles', 'chesapeake_delaware_bay_area', areaFile)
+    
+    pol = gpd.read_file(areaFile)
+    aux = pointsInsidePoly(list(zip(x, y)), list(pol.geometry[0].exterior.coords))
     ## define vector with zeros to only get the difference between datums
-    z = np.zeros(len(x))
-    ## call class
-    vp = VyperPoints(silent = True)
+    zcero = np.zeros(len(x))
+    ## load vyperdatum
+    ### Valid tidal area
+    vp0 = VyperPoints(vdatum_directory = vdatum_directory, silent = True)
     ## get the difference between vertical datums on the requested points
-    vp.transform_points((epsg, vdatumIn), (epsg, vdatumOut), x, y, z = z)
+    vp0.transform_points((epsg1, vdatumIn), (epsg1, vdatumOut), x[~aux], y[~aux], z = zcero[~aux])
+    ## call class
+    vp1 = VyperPoints(silent = True)
+    ## get the difference between vertical datums on the requested points
+    vp1.transform_points((epsg2, vdatumIn), (epsg1, vdatumOut), x[aux], y[aux], z = zcero[aux])   
     ## define dataframe
-    df = pd.DataFrame({'x': x, 'y': y, 'dz0': vp.z})
-    ## get index of nan and non-nan outputs of the vydatum output
-    indexVal = np.where(~np.isnan(df['dz0'].values))[0]
-    indexNan = np.where(np.isnan(df['dz0'].values))[0]
-    ## define kdtree to do a nearest neighbor interpolation
-    tree = KDTree(list(zip(df.loc[indexVal, 'x'], df.loc[indexVal, 'y'])))
-    ## asign nearest non-null difference to the null points
-    query = tree.query(list(zip(df.loc[indexNan, 'x'], df.loc[indexNan, 'y'])))
-    ## dz0 column is the direct vdatum output
-    aux0 = df.loc[indexVal, 'dz0']
-    aux1 = aux0.values[query[1]]
-    ## dz1 column is the NN interpolation output
-    df['dz1'] = [np.nan]*len(df)
-    df.loc[indexNan, 'dz1'] = aux1
-    ## dz is the column with the combination of both
-    df['dz'] = df['dz0'].fillna(0) + df['dz1'].fillna(0)
+    df0 = pd.DataFrame({'x': x[~aux], 'y': y[~aux], 'z': z[~aux], 'dz': vp0.z, 'area': 0})
+    df1 = pd.DataFrame({'x': x[aux], 'y': y[aux], 'z': z[aux], 'dz': vp1.z, 'area': 1})
+    df = pd.concat([df0, df1], axis = 0)
+    df = df.dropna()
+    df.index = range(len(df))
+    df.to_pickle(pathout)
     
     return df
     
-def gdfChangeVertDatum(vdatum_directory, gdf, vdatumIn = 'tss', vdatumOut = 'navd88'):
-        ''' Change the vertical datum of the columns of a GeoDataFrame which
-            contains "z" on the name
-            Parameters
-                vdatum_directory: string
-                    full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
-            gdf: GeoDataFrame
-                out of the runExtractContours function
-            vdatumIn, vdatumOut: string. Default 'tss' and 'navd88'
-                name of the input and output vertical datums. Mean sea level is "tss"
-                For checking the available datums:
-                from vyperdatum.pipeline import datum_definition
-                list(datum_definition.keys())
-            gdf2: GeoDataFrame
-                updated geodataframe with the new datum added on the name 
-                to the columns with "z" on it.
-        '''
-        ## get centroid of each element
-        gdf2 = gdf.copy()
-        dummyList = [list(gdf2['geometry'][x].centroid.coords)[0] for x in gdf2.index]
-        aux = list(zip(*dummyList))
-        ## array with the coordinates of the element's centroid
-        x = np.array(aux[0])
-        y = np.array(aux[1])
-        z = np.zeros(len(x))
-        ## get epsg code
-        epsg = int(gdf2.crs.to_string().split(':')[1])
-        
-        ## call dzDatum function to get the vertical difference between datums
-        df = dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut)
-        
-        aux = [x for x in gdf2.columns if 'z' in x]
-        for col in aux:
-            ## add the computed difference to the columns with vertical data
-            gdf2[col] = gdf2[col] + df.dz
-        
-        return gdf2
+def changeDatum(x, y, z, var, dzFile, zeroDif=-20):
+    ''' Change the vertical datum
+        Parameters
+            x, y, z: arrays
+                coordinates of the points to change the datum
+            var: array
+                values to be transformed
+            dzFile: str
+                full path of the pickle file with the vertical difference between datums
+                for each mesh node
+            zeroDif: int
+                threshold for using nearest neighbor interpolation to change datum. Points below
+                this value won't be changed.
+        Returns
+            dfout: dataframe
+                data transformed to the new datum
+    '''
+    dfdz = pd.read_pickle(dzFile)
+    dfout = pd.DataFrame({'x': x, 'y': y, 'z': -1*z, 'var': var, 'dz': 0})
+    tree = KDTree(list(zip(dfdz['x'], dfdz['y'])))
+    query = tree.query(list(zip(dfout[dfout['z'] > zeroDif]['x'], dfout[dfout['z'] > zeroDif]['y'])))[1]
+    dfout.loc[dfout[dfout['z'] > zeroDif].index, 'dz'] = dfdz['dz'].values[query]
+    dfout['newVar'] = dfout['var'] + dfout['dz']
+    
+    return dfout
 
 def classifyPolygons(polys):
     ''' Classify polygons based on signed area to get inner and outer polygons.
@@ -381,7 +373,7 @@ def contours2gpd(tri, data, levels, epsg, pbar=False):
     
     return gdf
 
-def runExtractContours(ncObj, var, levels, conType, epsg):
+def runExtractContours(ncObj, var, levels, conType, epsg, dzFile=None, zeroDif=-20):
     ''' Run "contours2gpd" or "filledContours2gpd" if npro = 1 or "contours2gpd_mp" or "filledContours2gpd_mp" if npro > 1.
         Parameters
             ncObj: netCDF4._netCDF4.Dataset
@@ -394,6 +386,12 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
                 'polyline' or 'polygon'
             epsg: int
                 coordinate system
+            dzFile: str
+                full path of the pickle file with the vertical difference between datums
+                for each mesh node
+            zeroDif: int
+                threshold for using nearest neighbor interpolation to change datum. Points below
+                this value won't be changed.
         Returns
             gdf: GeoDataFrame
                 Polygons or polylines as geometry columns. If the requested file is time-varying the GeoDataFrame will include all timesteps.
@@ -403,6 +401,7 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
     nv = ncObj['element'][:,:] - 1 ## triangles starts from 1
     x = ncObj['x'][:].data
     y = ncObj['y'][:].data
+    z = ncObj['depth'][:].data
     
     ## get extra info: variable name, variable long-name and unit name
     vname = ncObj[var].name
@@ -424,8 +423,13 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
     ## time constant
     if timeVar == 0:
         aux = ncObj[var][:].data
-        ## change nan to -99999 and transform it to a 1D vector
-        aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
+        if dzFile != None: ## change datum
+            dfNewDatum = changeDatum(x, y, z, aux, dzFile, zeroDif)
+            ## change nan to -99999 and transform it to a 1D vector
+            aux = np.nan_to_num(dfNewDatum['newVar'].values, nan = -99999.0).reshape(-1)*auxMult
+        else: ## original datum remains constant
+            ## change nan to -99999 and transform it to a 1D vector
+            aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
         ## non-filled contours
         if conType == 'polyline':
             labelCol = 'z'
@@ -454,7 +458,13 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             for t in tqdm(range(ncObj['time'].shape[0])):
                 ## data to 1D non masked array
                 aux = ncObj[var][t, :].data
-                aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
+                if dzFile != None: ## change datum
+                    dfNewDatum = changeDatum(x, y, z, aux, dzFile, zeroDif)
+                    ## change nan to -99999 and transform it to a 1D vector
+                    aux = np.nan_to_num(dfNewDatum['newVar'].values, nan = -99999.0).reshape(-1)*auxMult
+                else: ## original datum remains constant
+                    ## change nan to -99999 and transform it to a 1D vector
+                    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
                 gdfi = contours2gpd(tri, aux, levels, epsg, False)
                 ## add extra info to the gdf
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
@@ -469,7 +479,13 @@ def runExtractContours(ncObj, var, levels, conType, epsg):
             for t in tqdm(range(ncObj['time'].shape[0])):
                 ## data to 1D non masked array
                 aux = ncObj[var][t, :].data
-                aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1) 
+                if dzFile != None: ## change datum
+                    dfNewDatum = changeDatum(x, y, z, aux, dzFile, zeroDif)
+                    ## change nan to -99999 and transform it to a 1D vector
+                    aux = np.nan_to_num(dfNewDatum['newVar'].values, nan = -99999.0).reshape(-1)*auxMult
+                else: ## original datum remains constant
+                    ## change nan to -99999 and transform it to a 1D vector
+                    aux = np.nan_to_num(aux, nan = -99999.0).reshape(-1)*auxMult
                 gdfi = filledContours2gpd(tri, aux, levels, epsg, False)
                 ## add extra info to the gdf
                 ti = pd.Timedelta(seconds = int(ncObj['time'][t]))
@@ -759,9 +775,8 @@ def nc2xr(ncFile, var):
         
     return ds
     
-def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatumOut='navd88', 
-           epsgIn=4326, vUnitIn='m', vDatumIn='tss', vDatumPath=None, subDomain=None, 
-           exportMesh=False, n=-1, rs=42, aggfunc='mean', meshName=None):
+def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vUnitIn='m', epsgIn=4326,
+           subDomain=None, exportMesh=False, n=-1, rs=42, aggfunc='mean', meshName=None, dzFile=None, zeroDif=-20):
     ''' Run all necesary functions to export adcirc outputs as shapefiles.
         Parameters
             ncFile: string
@@ -773,24 +788,14 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatum
                 Values must be in vUnitOut vertical unit.
             conType: string
                 'polyline' or 'polygon'
+            pathout: string
+                complete path of the output file (*.shp or *.gpkg)
             epsgOut: int
                 coordinate system of the output shapefile
             vUnitIn, vUnitOut: string. Default for vUnitIn is 'm' and 'ft' for vUnitOut
                 input and output vertical units. For the momment only supported 'm' and 'ft'
-            vDatumIn, vDatumOut: string. Default for vDatumIn is 'tss' and for vDatumOut is 'navd88.
-                name of the input and output vertical datums. Mean sea level is "tss"
-                For checking the available datums:
-                from vyperdatum.pipeline import datum_definition
-                list(datum_definition.keys())
-            pathout: string
-                complete path of the output file (*.shp or *.gpkg)
             epsgIn: int. Default 4326.
                 coordinate system of the adcirc input
-            vdatum_directory: string. Default None
-                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
-            vDatumPath: string. Default None
-                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
-                vDatumIn and vDatumOut are different
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
@@ -805,6 +810,12 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatum
                 how to aggregate quantitative values
             meshName: str
                 file name of the output mesh shapefile
+            dzFile: str
+                full path of the pickle file with the vertical difference between datums
+                for each mesh node
+            zeroDif: int
+                threshold for using nearest neighbor interpolation to change datum. Points below
+                this value won't be changed.
         Returns
             gdf: GeoDataFrame
                 gdf with contours
@@ -827,7 +838,7 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatum
     levels = levels_aux.copy()
     
     t00 = time.time()
-    gdf = runExtractContours(nc, var, levels, conType, epsgIn)
+    gdf = runExtractContours(nc, var, levels, conType, epsgIn, dzFile, zeroDif)
     print(f'    Ready with the contours extraction: {(time.time() - t00)/60:0.3f} min')
     
     ## clip contours if requested
@@ -836,13 +847,6 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vDatum
         subDom = readSubDomain(subDomain, epsgIn)
         gdf = gpd.clip(gdf, subDom)
         print(f'    Cliping contours based on mask: {(time.time() - t0)/60:0.3f} min')
-    ## change vertical datum if requested
-    if vDatumIn == vDatumOut:
-        pass
-    else:
-        t0 = time.time()
-        gdf = gdfChangeVertDatum(vDatumPath, gdf, vDatumIn, vDatumOut)
-        print(f'    Vertical datum changed: {(time.time() - t0)/60:0.3f} min')
     ## change vertical units if requested
     if vUnitIn == vUnitOut:
         pass
@@ -936,6 +940,7 @@ def fort14togdf(filein, epsgIn, epsgOut):
         gdf['elemArea'] = [np.round(geom.area, 3) for geom in gdf.geometry]
     
     return gdf
+
 ####################################### GOOGLE EARTH ################################################
 
 def createColorbar(levels, varName, units, cmap='viridis', fileName='tempColorbar.jpg', filePath='.'):

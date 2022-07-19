@@ -490,3 +490,90 @@ def runExtractContours(ncObj, var, levels, conType, epsg, subDom, npro):
         gdf = gpd.GeoDataFrame(pd.concat(listGdf, axis=0, ignore_index=True), crs=epsg)
         
     return gdf
+    
+def dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut):
+    ''' Get the vertical difference of two datums on a group of locations
+        Parameters
+            vdatum_directory: string
+                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
+            x, y: numpy array
+                x and y-coordinate of the group of points
+            epsg: int
+                coordinate system code of the data. eg: 4326 for wgs84 (lat/lon)
+            vdatumIn, vdatumOut: string
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
+        Returns
+            df: dataframe
+                dataframe with the coordinates of the requested points. The dz0 column is the raw
+                datum difference from vdatum, but it can also output NaN values. In this case the difference
+                of the closest valid point is assigned used the scipy KDTree algorithm.
+                
+    '''
+    ## load vyperdatum
+    vp = VyperPoints(vdatum_directory = vdatum_directory)
+    ## define vector with zeros to only get the difference between datums
+    z = np.zeros(len(x))
+    ## call class
+    vp = VyperPoints(silent = True)
+    ## get the difference between vertical datums on the requested points
+    vp.transform_points((epsg, vdatumIn), (epsg, vdatumOut), x, y, z = z)
+    ## define dataframe
+    df = pd.DataFrame({'x': x, 'y': y, 'dz0': vp.z})
+    ## get index of nan and non-nan outputs of the vydatum output
+    indexVal = np.where(~np.isnan(df['dz0'].values))[0]
+    indexNan = np.where(np.isnan(df['dz0'].values))[0]
+    ## define kdtree to do a nearest neighbor interpolation
+    tree = KDTree(list(zip(df.loc[indexVal, 'x'], df.loc[indexVal, 'y'])))
+    ## asign nearest non-null difference to the null points
+    query = tree.query(list(zip(df.loc[indexNan, 'x'], df.loc[indexNan, 'y'])))
+    ## dz0 column is the direct vdatum output
+    aux0 = df.loc[indexVal, 'dz0']
+    aux1 = aux0.values[query[1]]
+    ## dz1 column is the NN interpolation output
+    df['dz1'] = [np.nan]*len(df)
+    df.loc[indexNan, 'dz1'] = aux1
+    ## dz is the column with the combination of both
+    df['dz'] = df['dz0'].fillna(0) + df['dz1'].fillna(0)
+    
+    return df
+    
+def gdfChangeVertDatum(vdatum_directory, gdf, vdatumIn = 'tss', vdatumOut = 'navd88'):
+        ''' Change the vertical datum of the columns of a GeoDataFrame which
+            contains "z" on the name
+            Parameters
+                vdatum_directory: string
+                    full path of the instalation folder of vdatum (https://vdatum.noaa.gov/)
+            gdf: GeoDataFrame
+                out of the runExtractContours function
+            vdatumIn, vdatumOut: string. Default 'tss' and 'navd88'
+                name of the input and output vertical datums. Mean sea level is "tss"
+                For checking the available datums:
+                from vyperdatum.pipeline import datum_definition
+                list(datum_definition.keys())
+            gdf2: GeoDataFrame
+                updated geodataframe with the new datum added on the name 
+                to the columns with "z" on it.
+        '''
+        ## get centroid of each element
+        gdf2 = gdf.copy()
+        dummyList = [list(gdf2['geometry'][x].centroid.coords)[0] for x in gdf2.index]
+        aux = list(zip(*dummyList))
+        ## array with the coordinates of the element's centroid
+        x = np.array(aux[0])
+        y = np.array(aux[1])
+        z = np.zeros(len(x))
+        ## get epsg code
+        epsg = int(gdf2.crs.to_string().split(':')[1])
+        
+        ## call dzDatum function to get the vertical difference between datums
+        df = dzDatums(vdatum_directory, x, y, epsg, vdatumIn, vdatumOut)
+        
+        aux = [x for x in gdf2.columns if 'z' in x]
+        for col in aux:
+            ## add the computed difference to the columns with vertical data
+            gdf2[col] = gdf2[col] + df.dz
+        
+        return gdf2
