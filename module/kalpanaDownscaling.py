@@ -527,8 +527,8 @@ def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterF
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of nc2shp function ***************************************
         ********************************************************************************************************************
-            epsgIn: int. Default 4326
-                coordinate system of the adcirc input
+            epsgIn: int. Default 4326.
+                coordinate system of the adcirc input.
             vUnitIn, vUnitOut: string. Default for vUnitIn is 'm' and 'ft' for vUnitOut
                 input and output vertical units. For the momment only supported 'm' and 'ft'
             var: string. DEFAULT zeta_max
