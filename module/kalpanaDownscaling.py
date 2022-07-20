@@ -498,10 +498,10 @@ def postProcessStatic(compAdcirc2dem, floodDepth, kalpanaShp, clumpThreshold, pk
             print(f'        export as shp depth: {(time.time() - ta)/60:0.3f}')
         
 def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterFiles,
-              epsgIn=4326, vUnitIn='m', vUnitOut='ft', vDatumIn='tss', vDatumOut='navd88', var='zeta_max', 
-              conType ='polygon', subDomain=None, vDatumPath=None, exportMesh=False, n=-1, rs=42, aggfunc='mean',
+              epsgIn=4326, vUnitIn='m', vUnitOut='ft', var='zeta_max', conType ='polygon', 
+              subDomain=None, exportMesh=False, n=-1, rs=42, aggfunc='mean', dzFile=None, zeroDif=-20, 
               nameGrassLocation=None, createGrassLocation=True, createLocMethod='from_raster', attrCol='zMean', repLenGrowing=1.0, 
-              meshFile=None, compAdcirc2dem=True, floodDepth=True, clumpThreshold='from_mesh', perMinElemArea=1, ras2vec=False):
+              meshFile=None, compAdcirc2dem=True, floodDepth=False, clumpThreshold='from_mesh', perMinElemArea=1, ras2vec=False):
     ''' Run static downscaling method and the nc2shp function of the kalpanaExport module.
         Parameters
         ********************************************************************************************************************
@@ -527,22 +527,14 @@ def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterF
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of nc2shp function ***************************************
         ********************************************************************************************************************
-            epsgIn: int. Default 4326
-                coordinate system of the adcirc input
+            epsgIn: int. Default 4326.
+                coordinate system of the adcirc input.
             vUnitIn, vUnitOut: string. Default for vUnitIn is 'm' and 'ft' for vUnitOut
                 input and output vertical units. For the momment only supported 'm' and 'ft'
-            vDatumIn, vDatumOut: string. Default for vDatumIn is 'tss' and for vDatumOut is 'navd88.
-                name of the input and output vertical datums. Mean sea level is "tss"
-                For checking the available datums:
-                from vyperdatum.pipeline import datum_definition
-                list(datum_definition.keys())
             var: string. DEFAULT zeta_max
                 Name of the variable to export
             conType: string. DEFAULT polygon
                 'polyline' or 'polygon'
-            vDatumPath: string. Default None
-                full path of the instalation folder of vdatum (https://vdatum.noaa.gov/). Required only if vertical datums
-                vDatumIn and vDatumOut are different
             subDomain: str or list. Default None
                 complete path of the subdomain polygon kml or shapelfile, or list with the
                 uper-left x, upper-left y, lower-right x and lower-right y coordinates. The crs must be the same of the
@@ -555,6 +547,12 @@ def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterF
                 Random state
             aggfunc: str. Default mean
                 how to aggregate quantitative values
+            dzFile: str
+                full path of the pickle file with the vertical difference between datums
+                for each mesh node
+            zeroDif: int
+                threshold for using nearest neighbor interpolation to change datum. Points below
+                this value won't be changed.
         ********************************************************************************************************************
         ***************************************** OPTIONAL inputs of static method *****************************************
         ********************************************************************************************************************
@@ -595,13 +593,13 @@ def runStatic(ncFile, levels, epsgOut, pathOut,  grassVer, pathRasFiles, rasterF
         os.mkdir(pathaux)
     
     if exportMesh == True:
-        gdf, mesh = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, vDatumOut, 
-                            epsgIn, vUnitIn, vDatumIn, vDatumPath, subDomain, exportMesh, n, rs, aggfunc,
-                            os.path.splitext(os.path.basename(meshFile))[0])
+        gdf, mesh = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, 
+                           vUnitIn, epsgIn, subDomain, exportMesh, n, rs, aggfunc,
+                           os.path.splitext(os.path.basename(meshFile))[0], dzFile, zeroDif)
         meshFile = os.path.join(pathaux, os.path.splitext(os.path.basename(meshFile))[0] + '.shp')
     else:
-        gdf = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, vDatumOut, 
-                     epsgIn, vUnitIn, vDatumIn, vDatumPath, subDomain)
+        gdf = nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut, 
+                     vUnitIn, epsgIn, subDomain, dzFile = dzFile, zeroDif = zeroDif)
         mesh = gpd.read_file(os.path.splitext(meshFile)[0]+'.shp', ignore_geometry = True) # not fully sure if it is the best way
     
     if epsgOut == 4326:
