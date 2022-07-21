@@ -4,3 +4,5 @@ Kalpana is a python toolkit that converts ADCIRC output files to shapefiles and 
 Kalpana was built by Rosemary Cyriac, and her efforts were aided by the initial attempts of Rich Signell (USGS) and Rusty Holleman to generate shapefiles from ADCIRC results. Jason Fleming improved Kalpana and incorporated the code into ADCIRC Surge Guidance System (ASGS) that he maintains at the Renaissance Computing Institute (RENCI). 
 Kalpana was rewritten in python 3 and using GeoPandas as the core python package by Tomás Cuevas (tacuevas@ncsu.edu).
 For more information about Kalpana, please visit the Coastal & Computational Hydraulics Team website: https://ccht.ccee.ncsu.edu/kalpana/
+
+SUPERSEEDED --> THE CODE WAS MOVED TO THE OFFICIAL GITHUB OF THE CCHT (https://github.com/ccht-ncsu/Kalpana)
