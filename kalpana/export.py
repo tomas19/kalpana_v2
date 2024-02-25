@@ -103,7 +103,7 @@ def changeDatum(x, y, z, var, dzFile, zeroDif=-20, maxDif=-5, distThreshold=0.5,
     dz = dfdz['dz'].values
     
     ## define output dataframe with mesh vertex coordinates and values of the water level
-    dfOut = pd.DataFrame({'x': x, 'y': y, 'z': -1*z, 'var': var, 'dz': 0})
+    dfOut = pd.DataFrame({'x': x, 'y': y, 'z': -1*z, 'var': var, 'dz': 0, 'amp': 0})
     ## remove dry vertices
     dfAux = dfOut[(dfOut['var'] != -99999.0)]  
     ## remove vertices below zeroDif and above abs(zeroDif)
@@ -137,6 +137,7 @@ def changeDatum(x, y, z, var, dzFile, zeroDif=-20, maxDif=-5, distThreshold=0.5,
     dfAux['dz'] = interpolated_dz
     dfAux = dfAux.dropna()
     dfOut.loc[dfAux.index, 'dz'] = dfAux['dz'].values
+    dfOut.loc[dfAux.index, 'amp'] = dfAux['amp'].values
     ## apply the vertical datum correction with the reduction factor
     dfOut['newVar'] = dfOut['var'] - dfOut['dz']*dfOut['amp']
     
@@ -841,7 +842,7 @@ def nc2shp(ncFile, var, levels, conType, pathOut, epsgOut, vUnitOut='ft', vUnitI
     
     t00 = time.time()
     gdf = runExtractContours(nc, var, levels, conType, epsgIn, stepLevel, orgMaxLevel, 
-                            dzFile, zeroDif, distThreshold, k, timesteps)
+                            dzFile, zeroDif, maxDif, distThreshold, k, timesteps)
 
     logger.info(f'    Ready with the contours extraction: {(time.time() - t00)/60:0.3f} min') # Changed
  
